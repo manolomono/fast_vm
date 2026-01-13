@@ -1,0 +1,15 @@
+{
+  "vms_directory": "/home/user/fast_vm/vms",
+  "images_directory": "/home/user/fast_vm/images",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "qemu": {
+    "enable_kvm": true,
+    "default_memory_mb": 2048,
+    "default_cpus": 2,
+    "default_disk_size_gb": 20,
+    "vnc_start_port": 5900
+  }
+}
