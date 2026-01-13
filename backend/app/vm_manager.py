@@ -9,7 +9,11 @@ from .models import VMStatus, VMInfo, VMCreate
 
 
 class VMManager:
-    def __init__(self, vms_dir: str = "/home/user/fast_vm/vms"):
+    def __init__(self, vms_dir: Optional[str] = None):
+        if vms_dir is None:
+            # Use relative path from project root
+            base_dir = Path(__file__).parent.parent.parent
+            vms_dir = base_dir / "vms"
         self.vms_dir = Path(vms_dir)
         self.vms_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.vms_dir / "vms.json"

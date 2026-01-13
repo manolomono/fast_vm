@@ -125,12 +125,17 @@ fast_vm/
 
 ## Configuración
 
-### Cambiar directorios de VMs e imágenes
+### Directorios de VMs e imágenes
 
-Edita `backend/app/vm_manager.py` y modifica la ruta en `VMManager.__init__()`:
+Por defecto, Fast VM usa rutas relativas desde el directorio del proyecto:
+- VMs: `./vms/` (donde se almacenan los discos de las VMs)
+- Imágenes ISO: `./images/` (para tus archivos ISO)
+
+Si deseas cambiar la ubicación, puedes modificar `backend/app/vm_manager.py` en la línea donde se inicializa VMManager:
 
 ```python
-def __init__(self, vms_dir: str = "/tu/ruta/personalizada"):
+# Usar ruta personalizada
+vm_manager = VMManager(vms_dir="/tu/ruta/personalizada")
 ```
 
 ### Acceso VNC
