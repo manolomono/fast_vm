@@ -7,53 +7,361 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Fast VM</h1>
-            <p class="subtitle">QEMU Virtual Machine Manager</p>
-        </header>
+    <div class="main-layout">
+        <div class="left-panel" id="leftPanel">
+            <div class="container">
+                <header>
+                    <h1>Fast VM</h1>
+                    <p class="subtitle">QEMU Virtual Machine Manager</p>
+                </header>
 
-        <div class="actions">
-            <button id="createVmBtn" class="btn btn-primary">+ Nueva VM</button>
-            <button id="refreshBtn" class="btn btn-secondary">🔄 Actualizar</button>
+                <div class="actions">
+                    <button id="createVmBtn" class="btn btn-primary">+ Nueva VM</button>
+                    <button id="volumesBtn" class="btn btn-secondary">💾 Volúmenes</button>
+                    <button id="refreshBtn" class="btn btn-secondary">🔄 Actualizar</button>
+                </div>
+
+                <div id="vmsList" class="vms-list">
+                    <div class="loading">Cargando máquinas virtuales...</div>
+                </div>
+            </div>
         </div>
 
-        <div id="vmsList" class="vms-list">
-            <div class="loading">Cargando máquinas virtuales...</div>
+        <div class="right-panel" id="rightPanel">
+            <div class="vnc-panel-header">
+                <div class="vnc-panel-title">
+                    <h2>Consola VNC - <span id="vncVmNamePanel"></span></h2>
+                </div>
+                <button id="closePanelBtn" class="btn btn-secondary">✕ Cerrar</button>
+            </div>
+            <div class="vnc-panel-content">
+                <iframe id="vncFramePanel" src="" frameborder="0"></iframe>
+            </div>
         </div>
     </div>
 
     <!-- Modal for creating VM -->
     <div id="createVmModal" class="modal">
-        <div class="modal-content">
+        <div class="modal-content modal-large">
             <span class="close">&times;</span>
             <h2>Crear Nueva Máquina Virtual</h2>
             <form id="createVmForm">
-                <div class="form-group">
-                    <label for="vmName">Nombre:</label>
-                    <input type="text" id="vmName" name="name" required minlength="1" maxlength="50">
+                <!-- Basic Settings -->
+                <div class="form-section">
+                    <h3 class="section-title">Configuración Básica</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="vmName">Nombre:</label>
+                            <input type="text" id="vmName" name="name" required minlength="1" maxlength="50">
+                        </div>
+                        <div class="form-group">
+                            <label for="vmMemory">Memoria (MB):</label>
+                            <input type="number" id="vmMemory" name="memory" value="2048" min="512" max="32768" step="256">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="vmCpus">CPUs:</label>
+                            <input type="number" id="vmCpus" name="cpus" value="2" min="1" max="16">
+                        </div>
+                        <div class="form-group">
+                            <label for="vmDiskSize">Tamaño de Disco (GB):</label>
+                            <input type="number" id="vmDiskSize" name="disk_size" value="20" min="5" max="500">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="vmIsoPath">ISO de Instalación:</label>
+                        <select id="vmIsoPath" name="iso_path">
+                            <option value="">Sin ISO</option>
+                        </select>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label for="vmMemory">Memoria (MB):</label>
-                    <input type="number" id="vmMemory" name="memory" value="2048" min="512" max="32768" step="256">
+
+                <!-- Network Settings -->
+                <div class="form-section">
+                    <h3 class="section-title collapsible" onclick="toggleSection('networkSection')">
+                        <span class="collapse-icon">▼</span> Configuración de Red
+                    </h3>
+                    <div id="networkSection" class="section-content">
+                        <div id="networkInterfaces">
+                            <!-- Network interfaces will be added here dynamically -->
+                        </div>
+                        <button type="button" class="btn btn-secondary btn-small" onclick="addNetworkInterface()">+ Añadir Interface</button>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label for="vmCpus">CPUs:</label>
-                    <input type="number" id="vmCpus" name="cpus" value="2" min="1" max="16">
+
+                <!-- Hardware Options -->
+                <div class="form-section">
+                    <h3 class="section-title collapsible" onclick="toggleSection('hardwareSection')">
+                        <span class="collapse-icon">▼</span> Opciones de Hardware
+                    </h3>
+                    <div id="hardwareSection" class="section-content">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="vmCpuModel">Modelo de CPU:</label>
+                                <select id="vmCpuModel" name="cpu_model">
+                                    <option value="host">host (Mejor rendimiento)</option>
+                                    <option value="qemu64">qemu64 (Máxima compatibilidad)</option>
+                                    <option value="max">max (Todas las features)</option>
+                                    <option value="Skylake-Client">Skylake-Client</option>
+                                    <option value="EPYC">EPYC</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="vmDisplayType">Tipo de Display:</label>
+                                <select id="vmDisplayType" name="display_type">
+                                    <option value="std">VGA Estándar</option>
+                                    <option value="virtio">Virtio (Mejor rendimiento)</option>
+                                    <option value="qxl">QXL (Optimizado SPICE)</option>
+                                    <option value="cirrus">Cirrus (Legacy)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Orden de Arranque:</label>
+                            <div class="boot-order-container" id="bootOrderContainer">
+                                <div class="boot-order-item" data-device="disk">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="bootDisk" checked>
+                                    <label for="bootDisk">Disco</label>
+                                </div>
+                                <div class="boot-order-item" data-device="cdrom">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="bootCdrom" checked>
+                                    <label for="bootCdrom">CD-ROM</label>
+                                </div>
+                                <div class="boot-order-item" data-device="network">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="bootNetwork">
+                                    <label for="bootNetwork">Red (PXE)</label>
+                                </div>
+                            </div>
+                            <small class="help-text">Arrastra para cambiar el orden. Marca las opciones activas.</small>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label for="vmDiskSize">Tamaño de Disco (GB):</label>
-                    <input type="number" id="vmDiskSize" name="disk_size" value="20" min="5" max="500">
-                </div>
-                <div class="form-group">
-                    <label for="vmIsoPath">Ruta ISO (opcional):</label>
-                    <input type="text" id="vmIsoPath" name="iso_path" placeholder="/ruta/a/imagen.iso">
-                </div>
+
                 <div class="form-actions">
                     <button type="submit" class="btn btn-primary">Crear VM</button>
                     <button type="button" class="btn btn-secondary" id="cancelCreateBtn">Cancelar</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Edit VM Modal -->
+    <div id="editVmModal" class="modal">
+        <div class="modal-content modal-large">
+            <span class="close" id="editVmClose">&times;</span>
+            <h2>Editar Máquina Virtual - <span id="editVmNameDisplay"></span></h2>
+            <form id="editVmForm">
+                <!-- Basic Settings -->
+                <div class="form-section">
+                    <h3 class="section-title">Configuración Básica</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="editVmMemory">Memoria (MB):</label>
+                            <input type="number" id="editVmMemory" name="memory" min="512" max="32768" step="256">
+                        </div>
+                        <div class="form-group">
+                            <label for="editVmCpus">CPUs:</label>
+                            <input type="number" id="editVmCpus" name="cpus" min="1" max="16">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="editVmIso">ISO de Instalación:</label>
+                        <select id="editVmIso" name="iso_path">
+                            <option value="">Sin ISO</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Network Settings -->
+                <div class="form-section">
+                    <h3 class="section-title collapsible" onclick="toggleSection('editNetworkSection')">
+                        <span class="collapse-icon">▼</span> Configuración de Red
+                    </h3>
+                    <div id="editNetworkSection" class="section-content">
+                        <div id="editNetworkInterfaces">
+                            <!-- Network interfaces will be added here dynamically -->
+                        </div>
+                        <button type="button" class="btn btn-secondary btn-small" onclick="addNetworkInterface('edit')">+ Añadir Interface</button>
+                    </div>
+                </div>
+
+                <!-- Hardware Options -->
+                <div class="form-section">
+                    <h3 class="section-title collapsible" onclick="toggleSection('editHardwareSection')">
+                        <span class="collapse-icon">▼</span> Opciones de Hardware
+                    </h3>
+                    <div id="editHardwareSection" class="section-content">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="editVmCpuModel">Modelo de CPU:</label>
+                                <select id="editVmCpuModel" name="cpu_model">
+                                    <option value="host">host (Mejor rendimiento)</option>
+                                    <option value="qemu64">qemu64 (Máxima compatibilidad)</option>
+                                    <option value="max">max (Todas las features)</option>
+                                    <option value="Skylake-Client">Skylake-Client</option>
+                                    <option value="EPYC">EPYC</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editVmDisplayType">Tipo de Display:</label>
+                                <select id="editVmDisplayType" name="display_type">
+                                    <option value="std">VGA Estándar</option>
+                                    <option value="virtio">Virtio (Mejor rendimiento)</option>
+                                    <option value="qxl">QXL (Optimizado SPICE)</option>
+                                    <option value="cirrus">Cirrus (Legacy)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Orden de Arranque:</label>
+                            <div class="boot-order-container" id="editBootOrderContainer">
+                                <div class="boot-order-item" data-device="disk">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="editBootDisk" checked>
+                                    <label for="editBootDisk">Disco</label>
+                                </div>
+                                <div class="boot-order-item" data-device="cdrom">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="editBootCdrom" checked>
+                                    <label for="editBootCdrom">CD-ROM</label>
+                                </div>
+                                <div class="boot-order-item" data-device="network">
+                                    <span class="drag-handle">☰</span>
+                                    <input type="checkbox" id="editBootNetwork">
+                                    <label for="editBootNetwork">Red (PXE)</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Attached Volumes -->
+                <div class="form-section">
+                    <h3 class="section-title collapsible" onclick="toggleSection('editVolumesSection')">
+                        <span class="collapse-icon">▼</span> Volúmenes Adjuntos
+                    </h3>
+                    <div id="editVolumesSection" class="section-content">
+                        <div id="attachedVolumes" class="volumes-list">
+                            <!-- Attached volumes will be listed here -->
+                        </div>
+                        <div class="form-row">
+                            <select id="availableVolumes" class="flex-grow">
+                                <option value="">Seleccionar volumen...</option>
+                            </select>
+                            <button type="button" class="btn btn-secondary btn-small" onclick="attachVolumeToVm()">+ Adjuntar</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Guardar Cambios</button>
+                    <button type="button" class="btn btn-secondary" id="cancelEditBtn">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Volumes Modal -->
+    <div id="volumesModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Gestión de Volúmenes</h2>
+                <span class="close" id="volumesClose">&times;</span>
+            </div>
+            <div class="volumes-toolbar">
+                <button class="btn btn-primary" onclick="showCreateVolumeForm()">+ Crear Volumen</button>
+            </div>
+            <div id="createVolumeForm" class="create-volume-form" style="display: none;">
+                <h3>Crear Nuevo Volumen</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="volName">Nombre:</label>
+                        <input type="text" id="volName" required minlength="1" maxlength="50">
+                    </div>
+                    <div class="form-group">
+                        <label for="volSize">Tamaño (GB):</label>
+                        <input type="number" id="volSize" value="10" min="1" max="1000">
+                    </div>
+                    <div class="form-group">
+                        <label for="volFormat">Formato:</label>
+                        <select id="volFormat">
+                            <option value="qcow2">qcow2 (Recomendado)</option>
+                            <option value="raw">raw</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" onclick="createVolume()">Crear</button>
+                    <button type="button" class="btn btn-secondary" onclick="hideCreateVolumeForm()">Cancelar</button>
+                </div>
+            </div>
+            <div id="volumesList" class="volumes-grid">
+                <div class="loading">Cargando volúmenes...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Snapshots Modal -->
+    <div id="snapshotsModal" class="modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Snapshots - <span id="snapshotsVmName"></span></h2>
+                <span class="close" id="snapshotsClose">&times;</span>
+            </div>
+            <div class="snapshots-toolbar">
+                <button class="btn btn-primary" onclick="showCreateSnapshotForm()">+ Crear Snapshot</button>
+            </div>
+            <div id="createSnapshotForm" class="create-snapshot-form" style="display: none;">
+                <h3>Crear Nuevo Snapshot</h3>
+                <div class="form-row">
+                    <div class="form-group flex-grow">
+                        <label for="snapName">Nombre:</label>
+                        <input type="text" id="snapName" required minlength="1" maxlength="50">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="snapDescription">Descripción (opcional):</label>
+                    <input type="text" id="snapDescription" maxlength="200">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" onclick="createSnapshot()">Crear</button>
+                    <button type="button" class="btn btn-secondary" onclick="hideCreateSnapshotForm()">Cancelar</button>
+                </div>
+            </div>
+            <div id="snapshotsList" class="snapshots-list">
+                <div class="loading">Cargando snapshots...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="closeSnapshotsBtn">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Logs Modal -->
+    <div id="logsModal" class="modal">
+        <div class="modal-content logs-modal-content">
+            <div class="modal-header">
+                <h2>Logs de VM - <span id="logsVmName"></span></h2>
+                <span class="close" id="logsClose">&times;</span>
+            </div>
+            <div class="logs-content">
+                <div class="log-section">
+                    <h3>QEMU Log</h3>
+                    <pre id="qemuLog" class="log-output">Cargando...</pre>
+                </div>
+                <div class="log-section">
+                    <h3>Serial Console Log</h3>
+                    <pre id="serialLog" class="log-output">Cargando...</pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="refreshLogsBtn" class="btn btn-secondary">🔄 Actualizar</button>
+                <button id="closeLogsBtn" class="btn btn-secondary">Cerrar</button>
+            </div>
         </div>
     </div>
 
