@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast VM - VNC Console</title>
+    <link rel="stylesheet" href="app/styles/base.css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+
+        #top_bar {
+            background: #2c3e50;
+            color: white;
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #34495e;
+        }
+
+        #status {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        #status.connected {
+            color: #2ecc71;
+        }
+
+        #status.connecting {
+            color: #f39c12;
+        }
+
+        #status.disconnected {
+            color: #e74c3c;
+        }
+
+        #controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .control-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            background: #3498db;
+            color: white;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.3s ease;
+        }
+
+        .control-btn:hover {
+            background: #2980b9;
+        }
+
+        .control-btn.danger {
+            background: #e74c3c;
+        }
+
+        .control-btn.danger:hover {
+            background: #c0392b;
+        }
+
+        #screen_container {
+            width: 100%;
+            height: calc(100vh - 50px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: auto;
+        }
+
+        #screen {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .loading {
+            color: #ecf0f1;
+            font-size: 16px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="top_bar">
+        <div>
+            <span id="status" class="connecting">Conectando...</span>
+            <span id="vm_name" style="margin-left: 15px; color: #95a5a6;"></span>
+        </div>
+        <div id="controls">
+            <button class="control-btn" id="ctrl_alt_del_btn">Ctrl+Alt+Del</button>
+            <button class="control-btn danger" id="disconnect_btn">Desconectar</button>
+        </div>
+    </div>
+    <div id="screen_container">
+        <div id="screen">
+            <div class="loading">Cargando consola VNC...</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import RFB from './core/rfb.js';
+
+        let rfb;
+        const urlParams = new URLSearchParams(window.location.search);
+        const wsPort = urlParams.get('port');
+        const vmName = urlParams.get('name');
+
+        const statusEl = document.getElementById('status');
+        const vmNameEl = document.getElementById('vm_name');
+        const screenEl = document.getElementById('screen');
+        const disconnectBtn = document.getElementById('disconnect_btn');
+        const ctrlAltDelBtn = document.getElementById('ctrl_alt_del_btn');
+
+        // Set VM name
+        if (vmName) {
+            vmNameEl.textContent = `VM: ${vmName}`;
+        }
+
+        // Check if port is provided
+        if (!wsPort) {
+            statusEl.textContent = 'Error: No se especificó puerto WebSocket';
+            statusEl.className = 'disconnected';
+            screenEl.innerHTML = '<div class="loading">Error: Configuración inválida</div>';
+        } else {
+            connectVNC(wsPort);
+        }
+
+        function connectVNC(port) {
+            try {
+                // Clear loading message
+                screenEl.innerHTML = '';
+
+                // Build WebSocket URL (must include /websockify path)
+                const host = window.location.hostname || 'localhost';
+                const url = `ws://${host}:${port}/websockify`;
+
+                // Create RFB object
+                rfb = new RFB(screenEl, url, {
+                    credentials: { password: '' }
+                });
+
+                // Set up event listeners
+                rfb.addEventListener("connect", handleConnect);
+                rfb.addEventListener("disconnect", handleDisconnect);
+                rfb.addEventListener("securityfailure", handleSecurityFailure);
+
+                // Set view properties
+                rfb.scaleViewport = true;
+                rfb.resizeSession = false;
+
+                statusEl.textContent = 'Conectando...';
+                statusEl.className = 'connecting';
+
+            } catch (error) {
+                console.error('Error al conectar:', error);
+                statusEl.textContent = `Error: ${error.message}`;
+                statusEl.className = 'disconnected';
+                screenEl.innerHTML = '<div class="loading">Error al inicializar VNC</div>';
+            }
+        }
+
+        function handleConnect() {
+            statusEl.textContent = 'Conectado';
+            statusEl.className = 'connected';
+            console.log('VNC conectado exitosamente');
+        }
+
+        function handleDisconnect(e) {
+            statusEl.textContent = 'Desconectado';
+            statusEl.className = 'disconnected';
+
+            if (e.detail.clean) {
+                console.log('Desconectado de VNC');
+                screenEl.innerHTML = '<div class="loading">Desconectado</div>';
+            } else {
+                console.error('Desconexión inesperada:', e.detail);
+                screenEl.innerHTML = '<div class="loading">Conexión perdida</div>';
+            }
+        }
+
+        function handleSecurityFailure(e) {
+            statusEl.textContent = 'Error de seguridad';
+            statusEl.className = 'disconnected';
+            console.error('Fallo de seguridad VNC:', e.detail);
+            screenEl.innerHTML = '<div class="loading">Error de autenticación</div>';
+        }
+
+        // Disconnect button
+        disconnectBtn.addEventListener('click', () => {
+            if (rfb) {
+                rfb.disconnect();
+            }
+            // Notify parent window to close modal
+            window.parent.postMessage({ action: 'close' }, '*');
+        });
+
+        // Ctrl+Alt+Del button
+        ctrlAltDelBtn.addEventListener('click', () => {
+            if (rfb) {
+                rfb.sendCtrlAltDel();
+            }
+        });
+
+        // Cleanup on unload
+        window.addEventListener('beforeunload', () => {
+            if (rfb) {
+                rfb.disconnect();
+            }
+        });
+    </script>
+</body>
+</html>

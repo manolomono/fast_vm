@@ -56,6 +56,9 @@ let currentSnapshotsVmId = null;
 let networkInterfaceCounter = 0;
 let editNetworkInterfaceCounter = 0;
 
+// Available bridges cache
+let availableBridges = [];
+
 // Event Listeners
 createVmBtn.addEventListener('click', () => openModal());
 refreshBtn.addEventListener('click', () => loadVMs());
@@ -102,6 +105,7 @@ window.addEventListener('message', (event) => {
 // Initialize
 loadVMs();
 loadIsos();
+loadBridges();
 
 // API Functions
 async function apiRequest(endpoint, options = {}) {
@@ -140,6 +144,28 @@ async function loadIsos() {
     } catch (error) {
         console.error('Error loading ISOs:', error);
     }
+}
+
+async function loadBridges() {
+    try {
+        availableBridges = await apiRequest('/bridges');
+    } catch (error) {
+        console.error('Error loading bridges:', error);
+        availableBridges = [];
+    }
+}
+
+function getBridgeOptionsHTML(selectedBridge = '') {
+    if (availableBridges.length === 0) {
+        return '<option value="">No hay bridges disponibles</option>';
+    }
+    let html = '<option value="">Seleccionar bridge...</option>';
+    availableBridges.forEach(br => {
+        const selected = br.name === selectedBridge ? 'selected' : '';
+        const status = br.active ? '(activo)' : '(inactivo)';
+        html += `<option value="${br.name}" ${selected}>${br.name} ${status}</option>`;
+    });
+    return html;
 }
 
 async function loadVMs() {
@@ -261,6 +287,10 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
         `).join('');
     }
 
+    const noBridgesWarning = availableBridges.length === 0
+        ? '<small class="help-text warning">No hay bridges en el sistema. Usa NAT o crea un bridge primero.</small>'
+        : '';
+
     return `
         <div class="network-interface" data-net-index="${index}">
             <div class="network-interface-header">
@@ -272,13 +302,16 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
                     <label>Tipo de Red:</label>
                     <select id="${id}Type" onchange="onNetworkTypeChange(this, '${id}')">
                         <option value="nat" ${netType === 'nat' ? 'selected' : ''}>NAT (User networking)</option>
-                        <option value="bridge" ${netType === 'bridge' ? 'selected' : ''}>Bridge</option>
+                        <option value="bridge" ${netType === 'bridge' ? 'selected' : ''} ${availableBridges.length === 0 ? 'disabled' : ''}>Bridge ${availableBridges.length === 0 ? '(no disponible)' : ''}</option>
                         <option value="isolated" ${netType === 'isolated' ? 'selected' : ''}>Isolated</option>
                     </select>
                 </div>
                 <div class="form-group bridge-config" id="${id}BridgeConfig" style="display: ${netType === 'bridge' ? 'block' : 'none'};">
-                    <label>Nombre del Bridge:</label>
-                    <input type="text" id="${id}Bridge" placeholder="br0, virbr0..." value="${bridgeName}">
+                    <label>Bridge:</label>
+                    <select id="${id}Bridge">
+                        ${getBridgeOptionsHTML(bridgeName)}
+                    </select>
+                    ${noBridgesWarning}
                 </div>
             </div>
             <div class="port-forwards-section" id="${id}PortForwards" style="display: ${netType === 'nat' ? 'block' : 'none'};">
@@ -351,12 +384,12 @@ function getNetworkConfigs(containerId) {
 
     interfaces.forEach((iface, idx) => {
         const typeSelect = iface.querySelector('select[id$="Type"]');
-        const bridgeInput = iface.querySelector('input[id$="Bridge"]');
+        const bridgeSelect = iface.querySelector('select[id$="Bridge"]');
         const portForwardItems = iface.querySelectorAll('.port-forward-item');
 
         const network = {
             type: typeSelect.value,
-            bridge_name: typeSelect.value === 'bridge' ? bridgeInput.value : null,
+            bridge_name: typeSelect.value === 'bridge' && bridgeSelect ? bridgeSelect.value : null,
             port_forwards: []
         };
 

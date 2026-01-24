@@ -454,6 +454,50 @@ class VMManager:
 
         return logs
 
+    def get_available_bridges(self) -> List[Dict]:
+        """Get list of available network bridges on the system"""
+        bridges = []
+        try:
+            # Get bridges using ip command
+            result = subprocess.run(
+                ["ip", "-j", "link", "show", "type", "bridge"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json as json_module
+                bridge_data = json_module.loads(result.stdout)
+                for br in bridge_data:
+                    name = br.get('ifname', '')
+                    state = br.get('operstate', 'unknown').lower()
+                    bridges.append({
+                        'name': name,
+                        'state': state,
+                        'active': state == 'up'
+                    })
+        except Exception as e:
+            print(f"Error getting bridges: {e}")
+            # Fallback: try reading from /sys/class/net
+            try:
+                import os
+                net_path = Path("/sys/class/net")
+                if net_path.exists():
+                    for iface in net_path.iterdir():
+                        bridge_path = iface / "bridge"
+                        if bridge_path.exists():
+                            operstate_file = iface / "operstate"
+                            state = "unknown"
+                            if operstate_file.exists():
+                                state = operstate_file.read_text().strip()
+                            bridges.append({
+                                'name': iface.name,
+                                'state': state,
+                                'active': state == 'up'
+                            })
+            except Exception:
+                pass
+
+        return sorted(bridges, key=lambda x: x['name'])
+
     def get_available_isos(self) -> List[Dict]:
         """Get list of available ISO files"""
         images_dir = self.vms_dir.parent / "images"

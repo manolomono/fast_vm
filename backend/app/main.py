@@ -206,6 +206,16 @@ async def list_isos():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/bridges")
+async def list_bridges():
+    """List available network bridges on the system"""
+    try:
+        bridges = vm_manager.get_available_bridges()
+        return bridges
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
 async def update_vm(vm_id: str, updates: VMUpdate):
     """Update VM configuration"""

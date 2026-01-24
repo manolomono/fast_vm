@@ -444,6 +444,10 @@ header h1 {
     margin-top: 5px;
 }
 
+.help-text.warning {
+    color: #ed8936;
+}
+
 .empty-text {
     color: #888;
     font-style: italic;
