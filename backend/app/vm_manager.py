@@ -34,6 +34,60 @@ class VMManager:
         # Initialize VNC proxy manager
         self.vnc_proxy_manager = VNCProxyManager()
 
+    def _start_swtpm(self, vm_id: str, vm_dir: Path) -> Optional[str]:
+        """Start swtpm (software TPM) for a VM"""
+        tpm_dir = vm_dir / "tpm"
+        tpm_dir.mkdir(parents=True, exist_ok=True)
+        tpm_socket = vm_dir / "swtpm-sock"
+
+        # Check if swtpm is installed
+        try:
+            subprocess.run(["which", "swtpm"], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            print("Warning: swtpm not installed, TPM will not be available")
+            return None
+
+        # Kill any existing swtpm for this VM
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", f"swtpm.*{vm_id}"],
+                capture_output=True, text=True
+            )
+            if result.stdout.strip():
+                for pid in result.stdout.strip().split('\n'):
+                    subprocess.run(["kill", pid], capture_output=True)
+        except Exception:
+            pass
+
+        # Start swtpm
+        try:
+            swtpm_cmd = [
+                "swtpm", "socket",
+                "--tpmstate", f"dir={tpm_dir}",
+                "--ctrl", f"type=unixio,path={tpm_socket}",
+                "--tpm2",
+                "--log", f"file={vm_dir}/swtpm.log,level=20",
+                "-d"  # daemonize
+            ]
+            subprocess.run(swtpm_cmd, check=True, capture_output=True)
+            return str(tpm_socket)
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Failed to start swtpm: {e}")
+            return None
+
+    def _stop_swtpm(self, vm_id: str, vm_dir: Path):
+        """Stop swtpm for a VM"""
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", f"swtpm.*{vm_dir}"],
+                capture_output=True, text=True
+            )
+            if result.stdout.strip():
+                for pid in result.stdout.strip().split('\n'):
+                    subprocess.run(["kill", pid], capture_output=True)
+        except Exception:
+            pass
+
     def _load_vms(self) -> Dict:
         """Load VMs configuration from disk"""
         if self.config_file.exists():
@@ -110,12 +164,20 @@ class VMManager:
         """Build QEMU network arguments from network config"""
         args = []
 
+        # Map model names to QEMU device names
+        nic_model_map = {
+            'virtio': 'virtio-net-pci',
+            'e1000': 'e1000',
+            'rtl8139': 'rtl8139'
+        }
+
         if not networks:
             # Default NAT network
-            networks = [{'id': str(uuid.uuid4()), 'type': 'nat', 'port_forwards': []}]
+            networks = [{'id': str(uuid.uuid4()), 'type': 'nat', 'model': 'virtio', 'port_forwards': []}]
 
         for idx, net in enumerate(networks):
             net_type = net.get('type', 'nat')
+            nic_model = nic_model_map.get(net.get('model', 'virtio'), 'virtio-net-pci')
             mac = net.get('mac_address') or self._generate_mac_address()
 
             if net_type == 'nat':
@@ -131,18 +193,18 @@ class VMManager:
                         netdev_opts += f",hostfwd={proto}::{host_port}-:{guest_port}"
 
                 args.extend(["-netdev", netdev_opts])
-                args.extend(["-device", f"virtio-net-pci,netdev=net{idx},mac={mac}"])
+                args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
             elif net_type == 'bridge':
                 # Bridge networking
                 bridge_name = net.get('bridge_name', 'br0')
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
-                args.extend(["-device", f"virtio-net-pci,netdev=net{idx},mac={mac}"])
+                args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
             elif net_type == 'isolated':
                 # Isolated network (no external access)
                 args.extend(["-netdev", f"user,id=net{idx},restrict=yes"])
-                args.extend(["-device", f"virtio-net-pci,netdev=net{idx},mac={mac}"])
+                args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
         return args
 
@@ -241,15 +303,48 @@ class VMManager:
         pid_file = vm_dir / "qemu.pid"
         monitor_file = vm_dir / "monitor.sock"
 
-        # UEFI firmware paths
-        ovmf_code = Path("/usr/share/OVMF/OVMF_CODE_4M.fd")
-        ovmf_vars_template = Path("/usr/share/OVMF/OVMF_VARS_4M.fd")
+        # UEFI firmware paths - prefer Secure Boot variants for Windows 11
+        ovmf_code = None
+        ovmf_vars_template = None
+
+        # Try Secure Boot variants first (required for Windows 11)
+        # Note: secboot CODE + ms VARS is the correct combination for Microsoft Secure Boot
+        secboot_paths = [
+            ("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"),
+            ("/usr/share/OVMF/OVMF_CODE_4M.ms.fd", "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"),
+            ("/usr/share/OVMF/OVMF_CODE_4M.secboot.fd", "/usr/share/OVMF/OVMF_VARS_4M.secboot.fd"),
+            ("/usr/share/OVMF/OVMF_CODE.secboot.fd", "/usr/share/OVMF/OVMF_VARS.secboot.fd"),
+            ("/usr/share/qemu/OVMF_CODE_4M.secboot.fd", "/usr/share/qemu/OVMF_VARS_4M.ms.fd"),
+        ]
+
+        for code_path, vars_path in secboot_paths:
+            if Path(code_path).exists() and Path(vars_path).exists():
+                ovmf_code = Path(code_path)
+                ovmf_vars_template = Path(vars_path)
+                break
+
+        # Fallback to non-secure boot variants
+        if not ovmf_code:
+            fallback_paths = [
+                ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+                ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
+                ("/usr/share/qemu/OVMF_CODE.fd", "/usr/share/qemu/OVMF_VARS.fd"),
+            ]
+            for code_path, vars_path in fallback_paths:
+                if Path(code_path).exists() and Path(vars_path).exists():
+                    ovmf_code = Path(code_path)
+                    ovmf_vars_template = Path(vars_path)
+                    break
+
         ovmf_vars_vm = vm_dir / "OVMF_VARS.fd"
 
         # Copy OVMF_VARS to VM directory if not exists
-        if not ovmf_vars_vm.exists() and ovmf_vars_template.exists():
+        if not ovmf_vars_vm.exists() and ovmf_vars_template and ovmf_vars_template.exists():
             import shutil
             shutil.copy(ovmf_vars_template, ovmf_vars_vm)
+
+        # Start TPM emulator
+        tpm_socket = self._start_swtpm(vm_id, vm_dir)
 
         # Build base QEMU command
         qemu_cmd = [
@@ -281,10 +376,18 @@ class VMManager:
         qemu_cmd.extend(self._build_volume_args(volumes))
 
         # Add UEFI firmware if available
-        if ovmf_code.exists() and ovmf_vars_vm.exists():
+        if ovmf_code and ovmf_code.exists() and ovmf_vars_vm.exists():
             qemu_cmd.extend([
                 "-drive", f"if=pflash,format=raw,readonly=on,file={ovmf_code}",
                 "-drive", f"if=pflash,format=raw,file={ovmf_vars_vm}"
+            ])
+
+        # Add TPM 2.0 if swtpm is running
+        if tpm_socket:
+            qemu_cmd.extend([
+                "-chardev", f"socket,id=chrtpm,path={tpm_socket}",
+                "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
+                "-device", "tpm-tis,tpmdev=tpm0"
             ])
 
         # Add ISO if specified
@@ -360,6 +463,10 @@ class VMManager:
         vm['ws_port'] = None
         vm['ws_proxy_pid'] = None
 
+        # Stop TPM emulator
+        vm_dir = self.vms_dir / vm_id
+        self._stop_swtpm(vm_id, vm_dir)
+
         self._save_vms()
 
         return VMInfo(**vm)
@@ -384,11 +491,15 @@ class VMManager:
         if vm_id not in self.vms:
             raise ValueError(f"VM {vm_id} not found")
 
-        # Stop VM if running (this also stops the proxy)
+        # Stop VM if running (this also stops the proxy and TPM)
         self.stop_vm(vm_id)
 
         # Cleanup VNC proxy
         self.vnc_proxy_manager.stop_proxy(vm_id)
+
+        # Cleanup TPM
+        vm_dir = self.vms_dir / vm_id
+        self._stop_swtpm(vm_id, vm_dir)
 
         # Detach all volumes
         vm = self.vms[vm_id]

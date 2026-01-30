@@ -268,6 +268,7 @@ function createVMCard(vm) {
 function createNetworkInterfaceHTML(prefix, index, config = null) {
     const id = `${prefix}Net${index}`;
     const netType = config?.type || 'nat';
+    const nicModel = config?.model || 'virtio';
     const bridgeName = config?.bridge_name || '';
     const portForwards = config?.port_forwards || [];
 
@@ -306,6 +307,16 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
                         <option value="isolated" ${netType === 'isolated' ? 'selected' : ''}>Isolated</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>Modelo NIC:</label>
+                    <select id="${id}Model">
+                        <option value="virtio" ${nicModel === 'virtio' ? 'selected' : ''}>Virtio (Mejor rendimiento)</option>
+                        <option value="e1000" ${nicModel === 'e1000' ? 'selected' : ''}>e1000 (Compatible Windows)</option>
+                        <option value="rtl8139" ${nicModel === 'rtl8139' ? 'selected' : ''}>RTL8139 (Legacy)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
                 <div class="form-group bridge-config" id="${id}BridgeConfig" style="display: ${netType === 'bridge' ? 'block' : 'none'};">
                     <label>Bridge:</label>
                     <select id="${id}Bridge">
@@ -384,11 +395,13 @@ function getNetworkConfigs(containerId) {
 
     interfaces.forEach((iface, idx) => {
         const typeSelect = iface.querySelector('select[id$="Type"]');
+        const modelSelect = iface.querySelector('select[id$="Model"]');
         const bridgeSelect = iface.querySelector('select[id$="Bridge"]');
         const portForwardItems = iface.querySelectorAll('.port-forward-item');
 
         const network = {
             type: typeSelect.value,
+            model: modelSelect ? modelSelect.value : 'virtio',
             bridge_name: typeSelect.value === 'bridge' && bridgeSelect ? bridgeSelect.value : null,
             port_forwards: []
         };
@@ -412,7 +425,7 @@ function getNetworkConfigs(containerId) {
         networks.push(network);
     });
 
-    return networks.length > 0 ? networks : [{ type: 'nat', port_forwards: [] }];
+    return networks.length > 0 ? networks : [{ type: 'nat', model: 'virtio', port_forwards: [] }];
 }
 
 // ==================== Boot Order Functions ====================

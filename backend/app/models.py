@@ -21,6 +21,7 @@ class PortForward(BaseModel):
 class NetworkConfig(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: Literal["nat", "bridge", "isolated"] = "nat"
+    model: Literal["virtio", "e1000", "rtl8139"] = "virtio"  # NIC model
     bridge_name: Optional[str] = None  # For bridge mode (e.g., br0, virbr0)
     mac_address: Optional[str] = None  # Auto-generated if not specified
     port_forwards: List[PortForward] = []  # For NAT mode
