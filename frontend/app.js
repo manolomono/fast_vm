@@ -78,6 +78,10 @@ window.addEventListener('click', (e) => {
 // VNC Panel Event Listeners
 closePanelBtn.addEventListener('click', () => closeVNCPanel());
 
+// Fullscreen button
+const fullscreenBtn = document.getElementById('fullscreenBtn');
+fullscreenBtn.addEventListener('click', () => toggleFullscreen());
+
 // Logs Modal Event Listeners
 logsClose.addEventListener('click', () => closeLogsModal());
 closeLogsBtn.addEventListener('click', () => closeLogsModal());
@@ -237,10 +241,10 @@ function createVMCard(vm) {
                 <span class="vm-detail-value">${vm.volumes.length}</span>
             </div>
             ` : ''}
-            ${vm.vnc_port ? `
+            ${vm.spice_port ? `
             <div class="vm-detail-item">
-                <span class="vm-detail-label">VNC Port:</span>
-                <span class="vm-detail-value">${vm.vnc_port}</span>
+                <span class="vm-detail-label">SPICE Port:</span>
+                <span class="vm-detail-value">${vm.spice_port}</span>
             </div>
             ` : ''}
         </div>
@@ -252,6 +256,7 @@ function createVMCard(vm) {
             }
             ${vm.status === 'running' ?
                 `<button class="btn btn-info" onclick="openVNCConsole('${vm.id}', '${escapeHtml(vm.name)}')">🖥 Consola</button>
+                <button class="btn btn-secondary" onclick="showSpiceToolsInfo()" title="Instalar SPICE Guest Tools">❓ SPICE Tools</button>
                 <button class="btn btn-secondary" onclick="restartVM('${vm.id}')">🔄 Reiniciar</button>` :
                 ''
             }
@@ -972,30 +977,33 @@ function escapeHtml(text) {
     return String(text).replace(/[&<>"']/g, m => map[m]);
 }
 
-// ==================== VNC Console Functions ====================
+// ==================== SPICE Console Functions ====================
 
 async function openVNCConsole(vmId, vmName) {
+    // This function now uses SPICE instead of VNC for better clipboard and mouse support
     try {
-        showToast('Iniciando consola VNC...', 'info');
+        showToast('Iniciando consola SPICE...', 'info');
 
-        const vncInfo = await apiRequest(`/vms/${vmId}/vnc`);
+        const spiceInfo = await apiRequest(`/vms/${vmId}/spice`);
 
-        if (vncInfo.status !== 'ready') {
-            throw new Error('VNC no disponible. Asegúrate de que la VM esté iniciada.');
+        if (spiceInfo.status !== 'ready') {
+            throw new Error('SPICE no disponible. Asegúrate de que la VM esté iniciada.');
         }
 
         const wsHost = window.location.hostname || 'localhost';
-        const vncUrl = `http://${wsHost}:${vncInfo.ws_port}/vnc.html?autoconnect=true&resize=scale`;
-        vncFramePanel.src = vncUrl;
+        // Use spice_auto.html which auto-connects
+        // path=websockify tells it to connect to the websockify endpoint
+        const spiceUrl = `http://${wsHost}:${spiceInfo.ws_port}/spice_auto.html?host=${wsHost}&port=${spiceInfo.ws_port}&path=websockify&title=${encodeURIComponent(vmName)}`;
+        vncFramePanel.src = spiceUrl;
         vncVmNamePanel.textContent = vmName;
 
         rightPanel.classList.add('active');
         leftPanel.classList.add('compressed');
 
-        showToast('Consola VNC iniciada', 'success');
+        showToast('Consola SPICE iniciada', 'success');
     } catch (error) {
-        showToast('Error al abrir consola VNC: ' + error.message, 'error');
-        console.error('Error al abrir consola VNC:', error);
+        showToast('Error al abrir consola SPICE: ' + error.message, 'error');
+        console.error('Error al abrir consola SPICE:', error);
     }
 }
 
@@ -1003,6 +1011,70 @@ function closeVNCPanel() {
     rightPanel.classList.remove('active');
     leftPanel.classList.remove('compressed');
     vncFramePanel.src = '';
+}
+
+function toggleFullscreen() {
+    const iframe = vncFramePanel;
+
+    if (!document.fullscreenElement) {
+        // Enter fullscreen
+        if (iframe.requestFullscreen) {
+            iframe.requestFullscreen();
+        } else if (iframe.webkitRequestFullscreen) {
+            iframe.webkitRequestFullscreen();
+        } else if (iframe.mozRequestFullScreen) {
+            iframe.mozRequestFullScreen();
+        } else if (iframe.msRequestFullscreen) {
+            iframe.msRequestFullscreen();
+        }
+    } else {
+        // Exit fullscreen
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+            document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+            document.msExitFullscreen();
+        }
+    }
+}
+
+// Listen for fullscreen changes and notify iframe to resize
+document.addEventListener('fullscreenchange', () => {
+    setTimeout(() => {
+        if (vncFramePanel.contentWindow) {
+            vncFramePanel.contentWindow.postMessage({ action: 'resize' }, '*');
+        }
+    }, 100);
+});
+
+// Check if spice-guest-tools is available
+async function checkSpiceTools() {
+    try {
+        const status = await apiRequest('/spice-tools');
+        return status;
+    } catch (error) {
+        console.error('Error checking spice-tools:', error);
+        return { available: false };
+    }
+}
+
+// Show spice-guest-tools installation info
+function showSpiceToolsInfo() {
+    const message = `Para habilitar copiar/pegar y mejor rendimiento:
+
+1. Dentro de la VM, abre el segundo CD-ROM (SPICE-TOOLS)
+2. Ejecuta spice-guest-tools.exe
+3. Reinicia la VM
+
+Una vez instalado:
+- Copiar/pegar bidireccional funcionará
+- Las ventanas se pueden arrastrar correctamente
+- La pantalla se redimensiona automáticamente`;
+
+    alert(message);
 }
 
 // ==================== Logs Functions ====================

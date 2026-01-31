@@ -73,7 +73,7 @@ class VMCreate(BaseModel):
         default=["disk", "cdrom"]
     )
     cpu_model: Literal["host", "qemu64", "max", "Skylake-Client", "EPYC"] = "host"
-    display_type: Literal["std", "virtio", "qxl", "cirrus"] = "std"
+    display_type: Literal["std", "virtio", "qxl", "cirrus"] = "qxl"  # QXL for SPICE
 
 
 class VMInfo(BaseModel):
@@ -86,6 +86,13 @@ class VMInfo(BaseModel):
     disk_path: Optional[str] = None
     iso_path: Optional[str] = None
     pid: Optional[int] = None
+
+    # SPICE connection info
+    spice_port: Optional[int] = None
+    spice_ws_port: Optional[int] = None
+    spice_proxy_pid: Optional[int] = None
+
+    # Legacy VNC (deprecated, kept for migration)
     vnc_port: Optional[int] = None
     ws_port: Optional[int] = None
     ws_proxy_pid: Optional[int] = None
@@ -99,7 +106,7 @@ class VMInfo(BaseModel):
     # Hardware options
     boot_order: List[str] = ["disk", "cdrom"]
     cpu_model: str = "host"
-    display_type: str = "std"
+    display_type: str = "qxl"  # Default to QXL for SPICE
 
 
 class VMResponse(BaseModel):
@@ -112,6 +119,13 @@ class VNCConnectionInfo(BaseModel):
     ws_port: int
     ws_url: str
     vnc_port: int
+    status: str
+
+
+class SpiceConnectionInfo(BaseModel):
+    spice_port: int
+    ws_port: int
+    ws_url: str
     status: str
 
 

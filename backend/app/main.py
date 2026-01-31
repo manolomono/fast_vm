@@ -6,7 +6,7 @@ from typing import List
 import os
 
 from .models import (
-    VMCreate, VMInfo, VMResponse, VNCConnectionInfo, VMUpdate,
+    VMCreate, VMInfo, VMResponse, VNCConnectionInfo, SpiceConnectionInfo, VMUpdate,
     Volume, VolumeCreate, VolumeResponse,
     Snapshot, SnapshotCreate, SnapshotResponse
 )
@@ -32,10 +32,15 @@ frontend_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "
 if os.path.exists(frontend_path):
     app.mount("/static", StaticFiles(directory=frontend_path), name="static")
 
-# Mount noVNC directory
+# Mount noVNC directory (legacy)
 vnc_path = os.path.join(frontend_path, "vnc")
 if os.path.exists(vnc_path):
     app.mount("/vnc", StaticFiles(directory=vnc_path, html=True), name="vnc")
+
+# Mount spice-html5 directory
+spice_path = os.path.join(frontend_path, "spice")
+if os.path.exists(spice_path):
+    app.mount("/spice", StaticFiles(directory=spice_path, html=True), name="spice")
 
 
 @app.get("/")
@@ -180,6 +185,49 @@ async def disconnect_vnc(vm_id: str):
             success=True,
             message="VNC proxy disconnected successfully"
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== SPICE Endpoints ====================
+
+@app.get("/api/vms/{vm_id}/spice", response_model=SpiceConnectionInfo)
+async def get_spice_info(vm_id: str):
+    """Get SPICE connection info, starting proxy if needed"""
+    try:
+        spice_info = vm_manager.get_spice_connection(vm_id)
+        return SpiceConnectionInfo(**spice_info)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/vms/{vm_id}/spice/disconnect", response_model=VMResponse)
+async def disconnect_spice(vm_id: str):
+    """Disconnect SPICE proxy for a VM"""
+    try:
+        vm_manager.spice_proxy_manager.stop_proxy(vm_id)
+
+        # Update VM state
+        if vm_id in vm_manager.vms:
+            vm_manager.vms[vm_id]['spice_ws_port'] = None
+            vm_manager.vms[vm_id]['spice_proxy_pid'] = None
+            vm_manager._save_vms()
+
+        return VMResponse(
+            success=True,
+            message="SPICE proxy disconnected successfully"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/spice-tools")
+async def get_spice_tools_status():
+    """Check if spice-guest-tools ISO is available"""
+    try:
+        return vm_manager.get_spice_tools_status()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -397,6 +445,7 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on application shutdown"""
     vm_manager.vnc_proxy_manager.cleanup_all()
+    vm_manager.spice_proxy_manager.cleanup_all()
 
 
 if __name__ == "__main__":

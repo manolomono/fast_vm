@@ -30,12 +30,15 @@
         <div class="right-panel" id="rightPanel">
             <div class="vnc-panel-header">
                 <div class="vnc-panel-title">
-                    <h2>Consola VNC - <span id="vncVmNamePanel"></span></h2>
+                    <h2>Consola SPICE - <span id="vncVmNamePanel"></span></h2>
                 </div>
-                <button id="closePanelBtn" class="btn btn-secondary">✕ Cerrar</button>
+                <div class="vnc-panel-actions">
+                    <button id="fullscreenBtn" class="btn btn-primary" title="Pantalla completa">⛶ Fullscreen</button>
+                    <button id="closePanelBtn" class="btn btn-secondary">✕ Cerrar</button>
+                </div>
             </div>
             <div class="vnc-panel-content">
-                <iframe id="vncFramePanel" src="" frameborder="0" allowfullscreen allow="fullscreen"></iframe>
+                <iframe id="vncFramePanel" src="" frameborder="0" allowfullscreen allow="fullscreen; clipboard-read; clipboard-write"></iframe>
             </div>
         </div>
     </div>

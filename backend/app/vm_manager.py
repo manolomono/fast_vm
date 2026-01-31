@@ -13,6 +13,7 @@ from .models import (
     Volume, VolumeCreate, Snapshot, SnapshotCreate
 )
 from .vnc_proxy import VNCProxyManager
+from .spice_proxy import SpiceProxyManager
 
 
 class VMManager:
@@ -31,8 +32,14 @@ class VMManager:
         self.vms = self._load_vms()
         self.volumes = self._load_volumes()
 
-        # Initialize VNC proxy manager
+        # Initialize VNC proxy manager (legacy)
         self.vnc_proxy_manager = VNCProxyManager()
+
+        # Initialize SPICE proxy manager
+        self.spice_proxy_manager = SpiceProxyManager()
+
+        # Path to spice-guest-tools ISO
+        self.spice_tools_iso = self.vms_dir.parent / "images" / "spice-guest-tools.iso"
 
     def _start_swtpm(self, vm_id: str, vm_dir: Path) -> Optional[str]:
         """Start swtpm (software TPM) for a VM"""
@@ -94,12 +101,22 @@ class VMManager:
             with open(self.config_file, 'r') as f:
                 vms = json.load(f)
                 # Migrate old VMs to include new fields
+                needs_save = False
                 for vm_id, vm in vms.items():
                     vm.setdefault('networks', [{'id': str(uuid.uuid4()), 'type': 'nat', 'port_forwards': []}])
                     vm.setdefault('volumes', [])
                     vm.setdefault('boot_order', ['disk', 'cdrom'])
                     vm.setdefault('cpu_model', 'host')
-                    vm.setdefault('display_type', 'std')
+                    # Migrate to SPICE
+                    if 'spice_port' not in vm:
+                        vm['spice_port'] = None  # Will be assigned on start
+                        needs_save = True
+                    if vm.get('display_type') == 'std':
+                        vm['display_type'] = 'qxl'  # Better for SPICE
+                        needs_save = True
+                if needs_save:
+                    with open(self.config_file, 'w') as f:
+                        json.dump(vms, f, indent=2)
                 return vms
         return {}
 
@@ -127,6 +144,14 @@ class VMManager:
             if port not in used_ports:
                 return port
         return 5900
+
+    def _get_free_spice_port(self) -> int:
+        """Get a free SPICE port starting from 5800"""
+        used_ports = {vm.get('spice_port') for vm in self.vms.values() if vm.get('spice_port')}
+        for port in range(5800, 5899):
+            if port not in used_ports:
+                return port
+        return 5800
 
     def _generate_mac_address(self) -> str:
         """Generate a random MAC address for QEMU"""
@@ -255,6 +280,7 @@ class VMManager:
         ], check=True)
 
         vnc_port = self._get_free_vnc_port()
+        spice_port = self._get_free_spice_port()
 
         # Process networks - ensure MAC addresses are set
         networks = []
@@ -273,6 +299,7 @@ class VMManager:
             'disk_path': str(disk_path),
             'iso_path': vm_data.iso_path,
             'vnc_port': vnc_port,
+            'spice_port': spice_port,
             'status': VMStatus.STOPPED.value,
             'pid': None,
             'networks': networks,
@@ -346,7 +373,14 @@ class VMManager:
         # Start TPM emulator
         tpm_socket = self._start_swtpm(vm_id, vm_dir)
 
-        # Build base QEMU command
+        # Get SPICE port (assign if not exists for legacy VMs)
+        spice_port = vm.get('spice_port')
+        if not spice_port:
+            spice_port = self._get_free_spice_port()
+            vm['spice_port'] = spice_port
+            self._save_vms()
+
+        # Build base QEMU command with SPICE
         qemu_cmd = [
             "qemu-system-x86_64",
             "-name", vm['name'],
@@ -357,14 +391,28 @@ class VMManager:
             "-drive", f"file={vm['disk_path']},format=qcow2,if=none,id=disk0",
             "-device", "ahci,id=ahci",
             "-device", "ide-hd,drive=disk0,bus=ahci.0",
-            "-vnc", f":{vm['vnc_port'] - 5900}",
+            # SPICE configuration
+            "-spice", f"port={spice_port},disable-ticketing=on",
+            # QXL display for best SPICE experience
+            "-device", "qxl-vga,vgamem_mb=64",
+            # SPICE agent channel for clipboard, mouse, and display resize
+            "-device", "virtio-serial-pci",
+            "-chardev", "spicevmc,id=vdagent,name=vdagent",
+            "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0",
+            # USB redirection support
+            "-device", "ich9-usb-ehci1,id=usb",
+            "-device", "ich9-usb-uhci1,masterbus=usb.0,firstport=0,multifunction=on",
+            "-device", "ich9-usb-uhci2,masterbus=usb.0,firstport=2",
+            "-device", "ich9-usb-uhci3,masterbus=usb.0,firstport=4",
+            "-chardev", "spicevmc,id=usbredirchardev1,name=usbredir",
+            "-device", "usb-redir,chardev=usbredirchardev1,id=usbredirdev1",
+            "-chardev", "spicevmc,id=usbredirchardev2,name=usbredir",
+            "-device", "usb-redir,chardev=usbredirchardev2,id=usbredirdev2",
+            # Input devices
+            "-device", "usb-tablet",
             "-monitor", f"unix:{monitor_file},server,nowait",
             "-serial", "file:" + str(vm_dir / "serial.log"),
-            "-daemonize",
-            "-vga", vm.get('display_type', 'std'),
-            "-usb",
-            "-device", "usb-tablet",
-            "-device", "usb-kbd"
+            "-daemonize"
         ]
 
         # Add network arguments
@@ -390,10 +438,23 @@ class VMManager:
                 "-device", "tpm-tis,tpmdev=tpm0"
             ])
 
-        # Add ISO if specified
+        # Add ISOs - main installation ISO and spice-guest-tools
         has_iso = vm.get('iso_path') and os.path.exists(vm['iso_path'])
-        if has_iso:
-            qemu_cmd.extend(["-cdrom", vm['iso_path']])
+        has_spice_tools = self.spice_tools_iso.exists()
+
+        if has_iso or has_spice_tools:
+            # Use IDE controller for CD-ROMs for better compatibility
+            cd_index = 0
+            if has_iso:
+                qemu_cmd.extend([
+                    "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
+                ])
+                cd_index += 1
+            if has_spice_tools:
+                # Mount spice-guest-tools as secondary CD-ROM for easy installation
+                qemu_cmd.extend([
+                    "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index}"
+                ])
 
         # Add boot order
         boot_order = vm.get('boot_order', ['disk', 'cdrom'])
@@ -458,7 +519,12 @@ class VMManager:
         vm['status'] = VMStatus.STOPPED.value
         vm['pid'] = None
 
-        # Stop VNC proxy if running
+        # Stop SPICE proxy if running
+        self.spice_proxy_manager.stop_proxy(vm_id)
+        vm['spice_ws_port'] = None
+        vm['spice_proxy_pid'] = None
+
+        # Stop VNC proxy if running (legacy)
         self.vnc_proxy_manager.stop_proxy(vm_id)
         vm['ws_port'] = None
         vm['ws_proxy_pid'] = None
@@ -714,6 +780,58 @@ class VMManager:
             'ws_url': f"ws://localhost:{ws_port}",
             'vnc_port': vnc_port,
             'status': 'ready'
+        }
+
+    def get_spice_connection(self, vm_id: str) -> Dict:
+        """Get SPICE connection info, starting proxy if needed"""
+        if vm_id not in self.vms:
+            raise ValueError(f"VM {vm_id} not found")
+
+        vm = self.vms[vm_id]
+        self._update_vm_status(vm_id)
+
+        if vm['status'] != VMStatus.RUNNING.value:
+            raise ValueError(f"VM is not running (status: {vm['status']})")
+
+        spice_port = vm.get('spice_port')
+        if not spice_port:
+            raise ValueError("VM does not have SPICE port configured")
+
+        # Check if proxy already running
+        proxy_status = self.spice_proxy_manager.get_proxy_status(vm_id)
+
+        if proxy_status['status'] == 'running':
+            ws_port = proxy_status['ws_port']
+        else:
+            # Start new proxy
+            used_ws_ports = {
+                v.get('spice_ws_port') for v in self.vms.values()
+                if v.get('spice_ws_port')
+            }
+
+            proxy_info = self.spice_proxy_manager.start_proxy(
+                vm_id, spice_port, used_ws_ports
+            )
+
+            ws_port = proxy_info['ws_port']
+            vm['spice_ws_port'] = ws_port
+            vm['spice_proxy_pid'] = proxy_info['proxy_pid']
+            self._save_vms()
+
+        return {
+            'spice_port': spice_port,
+            'ws_port': ws_port,
+            'ws_url': f"ws://localhost:{ws_port}",
+            'status': 'ready'
+        }
+
+    def get_spice_tools_status(self) -> Dict:
+        """Check if spice-guest-tools ISO is available"""
+        exists = self.spice_tools_iso.exists()
+        return {
+            'available': exists,
+            'path': str(self.spice_tools_iso) if exists else None,
+            'download_url': 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe'
         }
 
     # ==================== Volume Management ====================
