@@ -171,7 +171,36 @@ class SpiceProxyManager:
 
     def get_proxy_status(self, vm_id: str) -> Dict:
         """Get proxy status for a VM"""
+        # Also check PID file in case state was lost (e.g., server restart)
+        pid_file = self.proxies_dir / f"spice_{vm_id}.pid"
+
+        if vm_id not in self.proxy_state and pid_file.exists():
+            try:
+                with open(pid_file, 'r') as f:
+                    pid = int(f.read().strip())
+                if self._is_process_running(pid):
+                    # Restore state from running process
+                    # Try to find the port from process cmdline
+                    try:
+                        proc = psutil.Process(pid)
+                        cmdline = proc.cmdline()
+                        # Find port in command line (format: port localhost:spice_port)
+                        for i, arg in enumerate(cmdline):
+                            if arg.isdigit() and 6800 <= int(arg) <= 6899:
+                                self.proxy_state[vm_id] = {
+                                    'ws_port': int(arg),
+                                    'pid': pid
+                                }
+                                break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         if vm_id not in self.proxy_state:
+            # Cleanup stale PID file
+            if pid_file.exists():
+                pid_file.unlink()
             return {'status': 'stopped'}
 
         state = self.proxy_state[vm_id]
@@ -185,6 +214,9 @@ class SpiceProxyManager:
             }
         else:
             del self.proxy_state[vm_id]
+            # Cleanup stale PID file
+            if pid_file.exists():
+                pid_file.unlink()
             return {'status': 'stopped'}
 
     def cleanup_all(self):

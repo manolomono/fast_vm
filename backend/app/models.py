@@ -20,9 +20,10 @@ class PortForward(BaseModel):
 
 class NetworkConfig(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    type: Literal["nat", "bridge", "isolated"] = "nat"
+    type: Literal["nat", "bridge", "macvtap", "isolated"] = "nat"
     model: Literal["virtio", "e1000", "rtl8139"] = "virtio"  # NIC model
     bridge_name: Optional[str] = None  # For bridge mode (e.g., br0, virbr0)
+    parent_interface: Optional[str] = None  # For macvtap mode (e.g., eno1, eth0)
     mac_address: Optional[str] = None  # Auto-generated if not specified
     port_forwards: List[PortForward] = []  # For NAT mode
 
@@ -64,6 +65,7 @@ class VMCreate(BaseModel):
     cpus: int = Field(default=2, ge=1, le=16)
     disk_size: int = Field(default=20, ge=5, le=500)
     iso_path: Optional[str] = None
+    secondary_iso_path: Optional[str] = None  # Secondary CD-ROM (e.g., drivers ISO)
 
     # Network configuration
     networks: List[NetworkConfig] = Field(default_factory=lambda: [NetworkConfig()])
@@ -85,6 +87,7 @@ class VMInfo(BaseModel):
     disk_size: int
     disk_path: Optional[str] = None
     iso_path: Optional[str] = None
+    secondary_iso_path: Optional[str] = None  # Secondary CD-ROM (e.g., drivers ISO)
     pid: Optional[int] = None
 
     # SPICE connection info
@@ -133,6 +136,7 @@ class VMUpdate(BaseModel):
     memory: Optional[int] = Field(None, ge=512, le=32768)
     cpus: Optional[int] = Field(None, ge=1, le=16)
     iso_path: Optional[str] = None
+    secondary_iso_path: Optional[str] = None  # Secondary CD-ROM (e.g., drivers ISO)
 
     # Network configuration
     networks: Optional[List[NetworkConfig]] = None

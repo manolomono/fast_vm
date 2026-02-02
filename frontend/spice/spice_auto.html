@@ -49,6 +49,11 @@
 
             var host = null, port = null;
             var sc;
+            var reconnectAttempts = 0;
+            var maxReconnectAttempts = 10;
+            var reconnectDelay = 2000; // 2 seconds
+            var reconnectTimer = null;
+            var isConnected = false;
 
             function spice_set_cookie(name, value, days) {
                 var date, expires;
@@ -68,11 +73,99 @@
 
             function spice_error(e)
             {
+                console.log("SPICE error:", e);
+                isConnected = false;
                 disconnect();
+
                 if (e !== undefined && e.message === "Permission denied.") {
-                  var pass = prompt("Password");
-                  connect(pass);
+                    var pass = prompt("Password");
+                    connect(pass);
+                    return;
                 }
+
+                // Auto-reconnect logic - first refresh the proxy via API
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    var delay = reconnectDelay * Math.min(reconnectAttempts, 5); // Max 10 seconds
+                    console.log(`Reconnecting in ${delay/1000}s... (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
+                    showReconnectMessage(reconnectAttempts, maxReconnectAttempts, delay);
+
+                    reconnectTimer = setTimeout(function() {
+                        console.log("Attempting reconnect...");
+                        refreshProxyAndConnect();
+                    }, delay);
+                } else {
+                    console.log("Max reconnection attempts reached");
+                    showReconnectMessage(-1, maxReconnectAttempts, 0);
+                }
+            }
+
+            function refreshProxyAndConnect() {
+                // Extract VM ID from query params
+                var vmId = spice_query_var('vm_id', null);
+
+                if (vmId) {
+                    console.log("Refreshing proxy for VM:", vmId);
+                    // Use the main app's API endpoint
+                    var apiUrl = window.location.protocol + '//' + window.location.hostname + ':8000/api/vms/' + vmId + '/spice';
+                    fetch(apiUrl)
+                        .then(function(response) {
+                            if (response.ok) {
+                                return response.json();
+                            }
+                            throw new Error('Failed to refresh proxy');
+                        })
+                        .then(function(data) {
+                            console.log("Proxy refreshed, ws_port:", data.ws_port);
+                            var newPort = data.ws_port;
+                            var currentPort = spice_query_var('port', null);
+
+                            if (newPort && newPort != currentPort) {
+                                // Port changed, need to reload with new port
+                                console.log("Port changed from", currentPort, "to", newPort, "- reloading");
+                                var newUrl = window.location.href.replace(/port=\d+/, 'port=' + newPort);
+                                // Also update the host:port for the actual connection
+                                newUrl = newUrl.replace(/:(\d+)\/spice_auto/, ':' + newPort + '/spice_auto');
+                                window.location.href = newUrl;
+                            } else {
+                                connect(undefined);
+                            }
+                        })
+                        .catch(function(err) {
+                            console.error("Failed to refresh proxy:", err);
+                            connect(undefined); // Try anyway
+                        });
+                } else {
+                    console.log("No VM ID found, connecting directly");
+                    connect(undefined);
+                }
+            }
+
+            function showReconnectMessage(attempt, max, delay) {
+                var msgDiv = document.getElementById('message-div');
+                if (attempt === -1) {
+                    msgDiv.innerHTML = '<div class="reconnect-msg error">Conexión perdida. <button onclick="manualReconnect()">Reconectar</button></div>';
+                } else {
+                    msgDiv.innerHTML = `<div class="reconnect-msg">Reconectando... (${attempt}/${max})</div>`;
+                }
+                msgDiv.style.display = 'block';
+            }
+
+            function hideReconnectMessage() {
+                var msgDiv = document.getElementById('message-div');
+                msgDiv.style.display = 'none';
+            }
+
+            function manualReconnect() {
+                reconnectAttempts = 0;
+                connect(undefined);
+            }
+
+            function spice_connected() {
+                console.log("SPICE connected successfully");
+                isConnected = true;
+                reconnectAttempts = 0;
+                hideReconnectMessage();
             }
 
             function connect(password)
@@ -129,7 +222,7 @@
                 try
                 {
                     sc = new SpiceHtml5.SpiceMainConn({uri: uri, screen_id: "spice-screen", dump_id: "debug-div",
-                                message_id: "message-div", password: password, onerror: spice_error, onagent: agent_connected });
+                                message_id: "message-div", password: password, onerror: spice_error, onagent: agent_connected, onsuccess: spice_connected });
                 }
                 catch (e)
                 {
@@ -196,6 +289,9 @@
                 DEBUG > 0 && console.log('SPICE port', event.detail.channel.portName, 'event data:', event.detail.spiceEvent);
             });
             */
+
+            // Expose manualReconnect globally
+            window.manualReconnect = manualReconnect;
 
             connect(undefined);
             document.getElementById('sendCtrlAltDel').addEventListener('click', function(){ SpiceHtml5.sendCtrlAltDel(sc); });

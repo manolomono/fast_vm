@@ -505,6 +505,81 @@ header h1 {
     color: #666;
 }
 
+/* Macvtap Help */
+.macvtap-help {
+    margin-top: 10px;
+    background: #fff8e1;
+    border: 1px solid #ffcc02;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.macvtap-help .help-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-size: 0.9em;
+    color: #856404;
+    background: #fff3cd;
+}
+
+.macvtap-help .help-header:hover {
+    background: #ffecb5;
+}
+
+.macvtap-help .help-toggle {
+    font-size: 0.8em;
+}
+
+.macvtap-help .help-content {
+    padding: 12px;
+    border-top: 1px solid #ffcc02;
+}
+
+.macvtap-help .help-content p {
+    margin-bottom: 10px;
+    font-size: 0.9em;
+    color: #333;
+}
+
+.macvtap-help .command-block {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    background: #2d2d2d;
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+
+.macvtap-help .command-block code {
+    flex: 1;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.8em;
+    color: #f8f8f2;
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+
+.macvtap-help .command-block .btn {
+    flex-shrink: 0;
+    background: #4a4a4a;
+    color: white;
+    border: none;
+}
+
+.macvtap-help .command-block .btn:hover {
+    background: #5a5a5a;
+}
+
+.macvtap-help .help-text {
+    font-size: 0.85em;
+    color: #666;
+    margin: 0;
+}
+
 /* Boot Order */
 .boot-order-container {
     background: white;

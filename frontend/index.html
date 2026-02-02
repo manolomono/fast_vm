@@ -72,11 +72,19 @@
                             <input type="number" id="vmDiskSize" name="disk_size" value="20" min="5" max="500">
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label for="vmIsoPath">ISO de Instalación:</label>
-                        <select id="vmIsoPath" name="iso_path">
-                            <option value="">Sin ISO</option>
-                        </select>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="vmIsoPath">ISO de Instalación:</label>
+                            <select id="vmIsoPath" name="iso_path">
+                                <option value="">Sin ISO</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="vmSecondaryIso">ISO Secundaria (Drivers):</label>
+                            <select id="vmSecondaryIso" name="secondary_iso_path">
+                                <option value="">Sin ISO</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 
@@ -171,11 +179,19 @@
                             <input type="number" id="editVmCpus" name="cpus" min="1" max="16">
                         </div>
                     </div>
-                    <div class="form-group">
-                        <label for="editVmIso">ISO de Instalación:</label>
-                        <select id="editVmIso" name="iso_path">
-                            <option value="">Sin ISO</option>
-                        </select>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="editVmIso">ISO de Instalación:</label>
+                            <select id="editVmIso" name="iso_path">
+                                <option value="">Sin ISO</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="editVmSecondaryIso">ISO Secundaria (Drivers):</label>
+                            <select id="editVmSecondaryIso" name="secondary_iso_path">
+                                <option value="">Sin ISO</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
 

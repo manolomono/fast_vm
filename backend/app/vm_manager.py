@@ -95,6 +95,65 @@ class VMManager:
         except Exception:
             pass
 
+    def _create_macvtap(self, name: str, parent_iface: str, mac: str) -> Optional[int]:
+        """Create a macvtap interface and return its tap device index"""
+        try:
+            # Delete existing interface if any
+            os.system(f"sudo -n /usr/sbin/ip link delete {name} 2>/dev/null")
+
+            # Create macvtap interface in bridge mode
+            cmd = f"sudo -n /usr/sbin/ip link add link {parent_iface} name {name} type macvtap mode bridge 2>&1"
+            print(f"Running: {cmd}")
+            ret = os.system(cmd)
+            print(f"Result: {ret}")
+            if ret != 0:
+                print(f"Error creating macvtap {name}: exit code {ret}")
+                return None
+
+            # Set MAC address
+            os.system(f"sudo -n /usr/sbin/ip link set {name} address {mac}")
+
+            # Bring interface up
+            os.system(f"sudo -n /usr/sbin/ip link set {name} up")
+
+            # Get the tap device index from /sys
+            tap_index_path = Path(f"/sys/class/net/{name}/ifindex")
+            if tap_index_path.exists():
+                tap_index = int(tap_index_path.read_text().strip())
+
+                # Set permissions on /dev/tapN so QEMU can access it
+                tap_dev = f"/dev/tap{tap_index}"
+                os.system(f"sudo -n /bin/chmod 666 {tap_dev}")
+
+                return tap_index
+
+            return None
+        except Exception as e:
+            print(f"Error creating macvtap {name}: {e}")
+            return None
+
+    def _delete_macvtap(self, name: str):
+        """Delete a macvtap interface"""
+        os.system(f"sudo -n /usr/sbin/ip link delete {name} 2>/dev/null")
+
+    def _cleanup_vm_macvtaps(self, vm_id: str):
+        """Clean up all macvtap interfaces for a VM"""
+        prefix = f"mvt{vm_id[:6]}"
+        try:
+            result = subprocess.run(
+                ["ip", "-o", "link", "show", "type", "macvtap"],
+                capture_output=True, text=True
+            )
+            for line in result.stdout.strip().split('\n'):
+                if prefix in line:
+                    # Extract interface name
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        iface_name = parts[1].strip().split('@')[0]
+                        self._delete_macvtap(iface_name)
+        except Exception:
+            pass
+
     def _load_vms(self) -> Dict:
         """Load VMs configuration from disk"""
         if self.config_file.exists():
@@ -221,10 +280,35 @@ class VMManager:
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
             elif net_type == 'bridge':
-                # Bridge networking
+                # Bridge networking - requires qemu-bridge-helper to be configured
                 bridge_name = net.get('bridge_name', 'br0')
+                # Verify bridge helper configuration
+                bridge_conf = Path("/etc/qemu/bridge.conf")
+                helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
+                if not bridge_conf.exists():
+                    raise ValueError(
+                        f"Bridge networking requires /etc/qemu/bridge.conf. "
+                        f"Create it with: sudo mkdir -p /etc/qemu && "
+                        f"sudo sh -c 'echo \"allow {bridge_name}\" > /etc/qemu/bridge.conf'"
+                    )
+                if helper_path.exists():
+                    # Check if helper has setuid bit
+                    mode = helper_path.stat().st_mode
+                    if not (mode & 0o4000):  # Check setuid bit
+                        raise ValueError(
+                            f"qemu-bridge-helper needs setuid permission. "
+                            f"Run: sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
+                        )
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
+
+            elif net_type == 'macvtap':
+                # macvtap networking - direct connection to physical interface
+                # VM gets IP from same DHCP as host, no bridge required
+                # This is handled specially in start_vm - just add placeholder
+                parent_iface = net.get('parent_interface', 'eno1')
+                # Include model in placeholder for device creation
+                args.append(f"__MACVTAP_{idx}_{parent_iface}_{nic_model}_{mac}__")
 
             elif net_type == 'isolated':
                 # Isolated network (no external access)
@@ -298,6 +382,7 @@ class VMManager:
             'disk_size': vm_data.disk_size,
             'disk_path': str(disk_path),
             'iso_path': vm_data.iso_path,
+            'secondary_iso_path': vm_data.secondary_iso_path,
             'vnc_port': vnc_port,
             'spice_port': spice_port,
             'status': VMStatus.STOPPED.value,
@@ -438,11 +523,11 @@ class VMManager:
                 "-device", "tpm-tis,tpmdev=tpm0"
             ])
 
-        # Add ISOs - main installation ISO and spice-guest-tools
+        # Add ISOs - main installation ISO and secondary ISO (drivers, tools, etc.)
         has_iso = vm.get('iso_path') and os.path.exists(vm['iso_path'])
-        has_spice_tools = self.spice_tools_iso.exists()
+        has_secondary_iso = vm.get('secondary_iso_path') and os.path.exists(vm['secondary_iso_path'])
 
-        if has_iso or has_spice_tools:
+        if has_iso or has_secondary_iso:
             # Use IDE controller for CD-ROMs for better compatibility
             cd_index = 0
             if has_iso:
@@ -450,10 +535,10 @@ class VMManager:
                     "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
                 ])
                 cd_index += 1
-            if has_spice_tools:
-                # Mount spice-guest-tools as secondary CD-ROM for easy installation
+            if has_secondary_iso:
+                # Mount secondary ISO (e.g., virtio-win drivers) as second CD-ROM
                 qemu_cmd.extend([
-                    "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index}"
+                    "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
                 ])
 
         # Add boot order
@@ -462,14 +547,58 @@ class VMManager:
 
         qemu_cmd.extend(["-pidfile", str(pid_file)])
 
+        # Process macvtap placeholders and create interfaces
+        macvtap_fds = []
+        final_cmd = []
+        for arg in qemu_cmd:
+            if arg.startswith("__MACVTAP_"):
+                # Parse: __MACVTAP_{idx}_{parent}_{model}_{mac}__
+                parts = arg.strip("_").split("_")
+                if len(parts) >= 5:
+                    idx = parts[1]
+                    parent_iface = parts[2]
+                    nic_model = parts[3]
+                    mac = parts[4]
+                    if len(parts) > 5:  # MAC has colons which were split
+                        mac = ":".join(parts[4:])
+                        mac = mac.rstrip("_")
+
+                    macvtap_name = f"mvt{vm_id[:6]}{idx}"
+                    tap_index = self._create_macvtap(macvtap_name, parent_iface, mac)
+
+                    if tap_index:
+                        tap_dev = f"/dev/tap{tap_index}"
+                        # Open the tap device and keep fd
+                        fd = os.open(tap_dev, os.O_RDWR)
+                        macvtap_fds.append(fd)
+                        final_cmd.extend(["-netdev", f"tap,id=net{idx},fd={fd}"])
+                        final_cmd.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
+                    else:
+                        raise Exception(f"Failed to create macvtap interface for {parent_iface}")
+            else:
+                final_cmd.append(arg)
+
+        qemu_cmd = final_cmd
+
         try:
             # Run QEMU and capture any immediate errors
-            result = subprocess.run(
-                qemu_cmd,
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            # Pass macvtap fds if any were created
+            run_kwargs = {
+                'check': True,
+                'capture_output': True,
+                'text': True
+            }
+            if macvtap_fds:
+                run_kwargs['pass_fds'] = tuple(macvtap_fds)
+
+            result = subprocess.run(qemu_cmd, **run_kwargs)
+
+            # Close macvtap fds after QEMU has inherited them
+            for fd in macvtap_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
             # Write startup info to log
             with open(log_file, 'w') as f:
@@ -532,6 +661,9 @@ class VMManager:
         # Stop TPM emulator
         vm_dir = self.vms_dir / vm_id
         self._stop_swtpm(vm_id, vm_dir)
+
+        # Clean up macvtap interfaces
+        self._cleanup_vm_macvtaps(vm_id)
 
         self._save_vms()
 
@@ -675,6 +807,39 @@ class VMManager:
 
         return sorted(bridges, key=lambda x: x['name'])
 
+    def get_available_interfaces(self) -> List[Dict]:
+        """Get list of physical network interfaces for macvtap"""
+        interfaces = []
+        try:
+            result = subprocess.run(
+                ["ip", "-j", "link", "show"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json as json_module
+                iface_data = json_module.loads(result.stdout)
+                for iface in iface_data:
+                    name = iface.get('ifname', '')
+                    # Skip loopback, virtual, and docker interfaces
+                    if name in ('lo',) or name.startswith(('veth', 'docker', 'br-', 'virbr', 'macvtap')):
+                        continue
+                    # Skip bridges (handled separately)
+                    link_type = iface.get('link_type', '')
+                    if link_type == 'bridge':
+                        continue
+                    state = iface.get('operstate', 'unknown').lower()
+                    # Only show interfaces that are up or could be used
+                    if state in ('up', 'down', 'unknown'):
+                        interfaces.append({
+                            'name': name,
+                            'state': state,
+                            'active': state == 'up'
+                        })
+        except Exception as e:
+            print(f"Error getting interfaces: {e}")
+
+        return sorted(interfaces, key=lambda x: (not x['active'], x['name']))
+
     def get_available_isos(self) -> List[Dict]:
         """Get list of available ISO files"""
         images_dir = self.vms_dir.parent / "images"
@@ -717,6 +882,11 @@ class VMManager:
             if updates['iso_path'] and not os.path.exists(updates['iso_path']):
                 raise ValueError(f"ISO file not found: {updates['iso_path']}")
             vm['iso_path'] = updates['iso_path']
+        if 'secondary_iso_path' in updates:
+            # Validate secondary ISO exists if provided
+            if updates['secondary_iso_path'] and not os.path.exists(updates['secondary_iso_path']):
+                raise ValueError(f"Secondary ISO file not found: {updates['secondary_iso_path']}")
+            vm['secondary_iso_path'] = updates['secondary_iso_path']
 
         # Update network config
         if 'networks' in updates and updates['networks'] is not None:

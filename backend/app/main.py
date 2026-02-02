@@ -264,6 +264,23 @@ async def list_bridges():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/interfaces")
+async def list_interfaces():
+    """List available physical network interfaces for macvtap"""
+    try:
+        interfaces = vm_manager.get_available_interfaces()
+        return interfaces
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/system/user")
+async def get_current_user():
+    """Get the current system user running the backend"""
+    import getpass
+    return {"username": getpass.getuser()}
+
+
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
 async def update_vm(vm_id: str, updates: VMUpdate):
     """Update VM configuration"""

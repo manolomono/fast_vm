@@ -56,8 +56,9 @@ let currentSnapshotsVmId = null;
 let networkInterfaceCounter = 0;
 let editNetworkInterfaceCounter = 0;
 
-// Available bridges cache
+// Available bridges and interfaces cache
 let availableBridges = [];
+let availableInterfaces = [];
 
 // Event Listeners
 createVmBtn.addEventListener('click', () => openModal());
@@ -110,6 +111,7 @@ window.addEventListener('message', (event) => {
 loadVMs();
 loadIsos();
 loadBridges();
+loadInterfaces();
 
 // API Functions
 async function apiRequest(endpoint, options = {}) {
@@ -137,13 +139,22 @@ async function apiRequest(endpoint, options = {}) {
 async function loadIsos() {
     try {
         const isos = await apiRequest('/isos');
+        // Primary ISO selectors
         const vmIsoPath = document.getElementById('vmIsoPath');
         vmIsoPath.innerHTML = '<option value="">Sin ISO</option>';
+        // Secondary ISO selectors
+        const vmSecondaryIso = document.getElementById('vmSecondaryIso');
+        vmSecondaryIso.innerHTML = '<option value="">Sin ISO</option>';
+
         isos.forEach(iso => {
+            // Primary ISO option
             const option = document.createElement('option');
             option.value = iso.path;
             option.textContent = `${iso.name} (${iso.size_mb} MB)`;
             vmIsoPath.appendChild(option);
+            // Secondary ISO option
+            const option2 = option.cloneNode(true);
+            vmSecondaryIso.appendChild(option2);
         });
     } catch (error) {
         console.error('Error loading ISOs:', error);
@@ -157,6 +168,28 @@ async function loadBridges() {
         console.error('Error loading bridges:', error);
         availableBridges = [];
     }
+}
+
+async function loadInterfaces() {
+    try {
+        availableInterfaces = await apiRequest('/interfaces');
+    } catch (error) {
+        console.error('Error loading interfaces:', error);
+        availableInterfaces = [];
+    }
+}
+
+function getInterfaceOptionsHTML(selectedInterface = '') {
+    if (availableInterfaces.length === 0) {
+        return '<option value="">No hay interfaces disponibles</option>';
+    }
+    let html = '<option value="">Seleccionar interface...</option>';
+    availableInterfaces.forEach(iface => {
+        const selected = iface.name === selectedInterface ? 'selected' : '';
+        const status = iface.active ? '(activo)' : '(inactivo)';
+        html += `<option value="${iface.name}" ${selected}>${iface.name} ${status}</option>`;
+    });
+    return html;
 }
 
 function getBridgeOptionsHTML(selectedBridge = '') {
@@ -275,6 +308,7 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
     const netType = config?.type || 'nat';
     const nicModel = config?.model || 'virtio';
     const bridgeName = config?.bridge_name || '';
+    const parentInterface = config?.parent_interface || '';
     const portForwards = config?.port_forwards || [];
 
     let portForwardsHTML = '';
@@ -294,7 +328,11 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
     }
 
     const noBridgesWarning = availableBridges.length === 0
-        ? '<small class="help-text warning">No hay bridges en el sistema. Usa NAT o crea un bridge primero.</small>'
+        ? '<small class="help-text warning">No hay bridges en el sistema. Usa NAT o macvtap.</small>'
+        : '';
+
+    const noInterfacesWarning = availableInterfaces.length === 0
+        ? '<small class="help-text warning">No hay interfaces físicas disponibles.</small>'
         : '';
 
     return `
@@ -308,6 +346,7 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
                     <label>Tipo de Red:</label>
                     <select id="${id}Type" onchange="onNetworkTypeChange(this, '${id}')">
                         <option value="nat" ${netType === 'nat' ? 'selected' : ''}>NAT (User networking)</option>
+                        <option value="macvtap" ${netType === 'macvtap' ? 'selected' : ''}>Macvtap (IP del router)</option>
                         <option value="bridge" ${netType === 'bridge' ? 'selected' : ''} ${availableBridges.length === 0 ? 'disabled' : ''}>Bridge ${availableBridges.length === 0 ? '(no disponible)' : ''}</option>
                         <option value="isolated" ${netType === 'isolated' ? 'selected' : ''}>Isolated</option>
                     </select>
@@ -328,6 +367,27 @@ function createNetworkInterfaceHTML(prefix, index, config = null) {
                         ${getBridgeOptionsHTML(bridgeName)}
                     </select>
                     ${noBridgesWarning}
+                </div>
+                <div class="form-group macvtap-config" id="${id}MacvtapConfig" style="display: ${netType === 'macvtap' ? 'block' : 'none'};">
+                    <label>Interface Física:</label>
+                    <select id="${id}ParentInterface">
+                        ${getInterfaceOptionsHTML(parentInterface)}
+                    </select>
+                    ${noInterfacesWarning}
+                    <div class="macvtap-help">
+                        <div class="help-header" onclick="toggleMacvtapHelp('${id}')">
+                            <span>⚠️ Requiere configuración de permisos</span>
+                            <span class="help-toggle">▶</span>
+                        </div>
+                        <div class="help-content" id="${id}MacvtapHelp" style="display: none;">
+                            <p>Ejecuta este comando en una terminal para permitir macvtap:</p>
+                            <div class="command-block">
+                                <code id="${id}MacvtapCmd">sudo sh -c "echo '$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/ip link *' > /etc/sudoers.d/qemu-macvtap && echo '$(whoami) ALL=(ALL) NOPASSWD: /bin/chmod 666 /dev/tap*' >> /etc/sudoers.d/qemu-macvtap && chmod 440 /etc/sudoers.d/qemu-macvtap"</code>
+                                <button type="button" class="btn btn-small btn-secondary" onclick="copyMacvtapCommand('${id}')">📋 Copiar</button>
+                            </div>
+                            <small class="help-text">Después de ejecutar el comando, la VM obtendrá una IP del router (mismo rango que el host).</small>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="port-forwards-section" id="${id}PortForwards" style="display: ${netType === 'nat' ? 'block' : 'none'};">
@@ -358,17 +418,20 @@ function removeNetworkInterface(btn) {
 
 function onNetworkTypeChange(select, id) {
     const bridgeConfig = document.getElementById(`${id}BridgeConfig`);
+    const macvtapConfig = document.getElementById(`${id}MacvtapConfig`);
     const portForwards = document.getElementById(`${id}PortForwards`);
+
+    // Hide all config sections first
+    bridgeConfig.style.display = 'none';
+    macvtapConfig.style.display = 'none';
+    portForwards.style.display = 'none';
 
     if (select.value === 'bridge') {
         bridgeConfig.style.display = 'block';
-        portForwards.style.display = 'none';
+    } else if (select.value === 'macvtap') {
+        macvtapConfig.style.display = 'block';
     } else if (select.value === 'nat') {
-        bridgeConfig.style.display = 'none';
         portForwards.style.display = 'block';
-    } else {
-        bridgeConfig.style.display = 'none';
-        portForwards.style.display = 'none';
     }
 }
 
@@ -402,12 +465,14 @@ function getNetworkConfigs(containerId) {
         const typeSelect = iface.querySelector('select[id$="Type"]');
         const modelSelect = iface.querySelector('select[id$="Model"]');
         const bridgeSelect = iface.querySelector('select[id$="Bridge"]');
+        const parentInterfaceSelect = iface.querySelector('select[id$="ParentInterface"]');
         const portForwardItems = iface.querySelectorAll('.port-forward-item');
 
         const network = {
             type: typeSelect.value,
             model: modelSelect ? modelSelect.value : 'virtio',
             bridge_name: typeSelect.value === 'bridge' && bridgeSelect ? bridgeSelect.value : null,
+            parent_interface: typeSelect.value === 'macvtap' && parentInterfaceSelect ? parentInterfaceSelect.value : null,
             port_forwards: []
         };
 
@@ -488,6 +553,7 @@ async function handleCreateVM(e) {
         cpus: parseInt(formData.get('cpus')),
         disk_size: parseInt(formData.get('disk_size')),
         iso_path: formData.get('iso_path') || null,
+        secondary_iso_path: formData.get('secondary_iso_path') || null,
         networks: getNetworkConfigs('networkInterfaces'),
         boot_order: getBootOrder('bootOrderContainer'),
         cpu_model: document.getElementById('vmCpuModel').value,
@@ -581,14 +647,22 @@ async function openEditVMModal(vmId) {
         editVmMemory.value = vm.memory;
         editVmCpus.value = vm.cpus;
 
-        // ISO dropdown
+        // ISO dropdowns
         editVmIso.innerHTML = '<option value="">Sin ISO</option>';
+        const editVmSecondaryIso = document.getElementById('editVmSecondaryIso');
+        editVmSecondaryIso.innerHTML = '<option value="">Sin ISO</option>';
         isos.forEach(iso => {
             const option = document.createElement('option');
             option.value = iso.path;
             option.textContent = `${iso.name} (${iso.size_mb} MB)`;
             if (vm.iso_path === iso.path) option.selected = true;
             editVmIso.appendChild(option);
+            // Secondary ISO
+            const option2 = document.createElement('option');
+            option2.value = iso.path;
+            option2.textContent = `${iso.name} (${iso.size_mb} MB)`;
+            if (vm.secondary_iso_path === iso.path) option2.selected = true;
+            editVmSecondaryIso.appendChild(option2);
         });
 
         // Network interfaces
@@ -689,6 +763,7 @@ async function handleEditVM(e) {
         memory: parseInt(editVmMemory.value),
         cpus: parseInt(editVmCpus.value),
         iso_path: editVmIso.value || null,
+        secondary_iso_path: document.getElementById('editVmSecondaryIso').value || null,
         networks: getNetworkConfigs('editNetworkInterfaces'),
         boot_order: getBootOrder('editBootOrderContainer'),
         cpu_model: document.getElementById('editVmCpuModel').value,
@@ -993,7 +1068,8 @@ async function openVNCConsole(vmId, vmName) {
         const wsHost = window.location.hostname || 'localhost';
         // Use spice_auto.html which auto-connects
         // path=websockify tells it to connect to the websockify endpoint
-        const spiceUrl = `http://${wsHost}:${spiceInfo.ws_port}/spice_auto.html?host=${wsHost}&port=${spiceInfo.ws_port}&path=websockify&title=${encodeURIComponent(vmName)}`;
+        // vm_id is needed for auto-reconnection to refresh the proxy
+        const spiceUrl = `http://${wsHost}:${spiceInfo.ws_port}/spice_auto.html?host=${wsHost}&port=${spiceInfo.ws_port}&path=websockify&title=${encodeURIComponent(vmName)}&vm_id=${vmId}`;
         vncFramePanel.src = spiceUrl;
         vncVmNamePanel.textContent = vmName;
 
@@ -1105,4 +1181,37 @@ async function loadVMLogs(vmId) {
 function closeLogsModal() {
     logsModal.style.display = 'none';
     currentLogsVmId = null;
+}
+
+// ==================== Macvtap Help Functions ====================
+
+function toggleMacvtapHelp(id) {
+    const helpContent = document.getElementById(`${id}MacvtapHelp`);
+    const helpToggle = helpContent.previousElementSibling.querySelector('.help-toggle');
+
+    if (helpContent.style.display === 'none') {
+        helpContent.style.display = 'block';
+        helpToggle.textContent = '▼';
+    } else {
+        helpContent.style.display = 'none';
+        helpToggle.textContent = '▶';
+    }
+}
+
+function copyMacvtapCommand(id) {
+    const cmdElement = document.getElementById(`${id}MacvtapCmd`);
+    const command = cmdElement.textContent;
+
+    navigator.clipboard.writeText(command).then(() => {
+        showToast('Comando copiado al portapapeles', 'success');
+    }).catch(err => {
+        // Fallback for older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = command;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showToast('Comando copiado al portapapeles', 'success');
+    });
 }
