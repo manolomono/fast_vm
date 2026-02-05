@@ -1,1217 +1,649 @@
-const API_BASE = '/api';
+// Fast VM Dashboard - Alpine.js Application
 
-// DOM Elements
-const vmsList = document.getElementById('vmsList');
-const createVmBtn = document.getElementById('createVmBtn');
-const refreshBtn = document.getElementById('refreshBtn');
-const volumesBtn = document.getElementById('volumesBtn');
-const createVmModal = document.getElementById('createVmModal');
-const createVmForm = document.getElementById('createVmForm');
-const closeModal = document.querySelector('.close');
-const cancelCreateBtn = document.getElementById('cancelCreateBtn');
-const toast = document.getElementById('toast');
+// API Helper with auth
+async function api(endpoint, options = {}) {
+    const token = localStorage.getItem('token');
+    const headers = {
+        'Content-Type': 'application/json',
+        ...(token && { 'Authorization': `Bearer ${token}` }),
+        ...options.headers
+    };
 
-// VNC Panel Elements
-const rightPanel = document.getElementById('rightPanel');
-const leftPanel = document.getElementById('leftPanel');
-const vncFramePanel = document.getElementById('vncFramePanel');
-const closePanelBtn = document.getElementById('closePanelBtn');
-const vncVmNamePanel = document.getElementById('vncVmNamePanel');
+    const response = await fetch(`/api${endpoint}`, { ...options, headers });
 
-// Logs Modal Elements
-const logsModal = document.getElementById('logsModal');
-const logsClose = document.getElementById('logsClose');
-const closeLogsBtn = document.getElementById('closeLogsBtn');
-const refreshLogsBtn = document.getElementById('refreshLogsBtn');
-const logsVmName = document.getElementById('logsVmName');
-const qemuLog = document.getElementById('qemuLog');
-const serialLog = document.getElementById('serialLog');
-let currentLogsVmId = null;
-
-// Edit VM Modal Elements
-const editVmModal = document.getElementById('editVmModal');
-const editVmClose = document.getElementById('editVmClose');
-const cancelEditBtn = document.getElementById('cancelEditBtn');
-const editVmForm = document.getElementById('editVmForm');
-const editVmNameDisplay = document.getElementById('editVmNameDisplay');
-const editVmMemory = document.getElementById('editVmMemory');
-const editVmCpus = document.getElementById('editVmCpus');
-const editVmIso = document.getElementById('editVmIso');
-let currentEditVmId = null;
-
-// Volumes Modal Elements
-const volumesModal = document.getElementById('volumesModal');
-const volumesClose = document.getElementById('volumesClose');
-const volumesList = document.getElementById('volumesList');
-
-// Snapshots Modal Elements
-const snapshotsModal = document.getElementById('snapshotsModal');
-const snapshotsClose = document.getElementById('snapshotsClose');
-const snapshotsVmName = document.getElementById('snapshotsVmName');
-const snapshotsList = document.getElementById('snapshotsList');
-const closeSnapshotsBtn = document.getElementById('closeSnapshotsBtn');
-let currentSnapshotsVmId = null;
-
-// Network interface counter
-let networkInterfaceCounter = 0;
-let editNetworkInterfaceCounter = 0;
-
-// Available bridges and interfaces cache
-let availableBridges = [];
-let availableInterfaces = [];
-
-// Event Listeners
-createVmBtn.addEventListener('click', () => openModal());
-refreshBtn.addEventListener('click', () => loadVMs());
-volumesBtn.addEventListener('click', () => openVolumesModal());
-closeModal.addEventListener('click', () => closeCreateModal());
-cancelCreateBtn.addEventListener('click', () => closeCreateModal());
-createVmForm.addEventListener('submit', handleCreateVM);
-
-window.addEventListener('click', (e) => {
-    if (e.target === createVmModal) closeCreateModal();
-    if (e.target === logsModal) closeLogsModal();
-    if (e.target === editVmModal) closeEditVmModal();
-    if (e.target === volumesModal) closeVolumesModal();
-    if (e.target === snapshotsModal) closeSnapshotsModal();
-});
-
-// VNC Panel Event Listeners
-closePanelBtn.addEventListener('click', () => closeVNCPanel());
-
-// Fullscreen button
-const fullscreenBtn = document.getElementById('fullscreenBtn');
-fullscreenBtn.addEventListener('click', () => toggleFullscreen());
-
-// Logs Modal Event Listeners
-logsClose.addEventListener('click', () => closeLogsModal());
-closeLogsBtn.addEventListener('click', () => closeLogsModal());
-refreshLogsBtn.addEventListener('click', () => {
-    if (currentLogsVmId) loadVMLogs(currentLogsVmId);
-});
-
-// Edit VM Modal Event Listeners
-editVmClose.addEventListener('click', () => closeEditVmModal());
-cancelEditBtn.addEventListener('click', () => closeEditVmModal());
-editVmForm.addEventListener('submit', handleEditVM);
-
-// Volumes Modal Event Listeners
-volumesClose.addEventListener('click', () => closeVolumesModal());
-
-// Snapshots Modal Event Listeners
-snapshotsClose.addEventListener('click', () => closeSnapshotsModal());
-closeSnapshotsBtn.addEventListener('click', () => closeSnapshotsModal());
-
-// Listen for messages from VNC iframe
-window.addEventListener('message', (event) => {
-    if (event.data && event.data.action === 'close') closeVNCPanel();
-});
-
-// Initialize
-loadVMs();
-loadIsos();
-loadBridges();
-loadInterfaces();
-
-// API Functions
-async function apiRequest(endpoint, options = {}) {
-    try {
-        const response = await fetch(`${API_BASE}${endpoint}`, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            },
-            ...options
-        });
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Request failed');
-        }
-
-        return await response.json();
-    } catch (error) {
-        console.error('API Error:', error);
-        throw error;
+    if (response.status === 401) {
+        localStorage.removeItem('token');
+        window.location.href = '/login.html';
+        throw new Error('Unauthorized');
     }
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'API Error');
+    }
+
+    return response.json();
 }
 
-async function loadIsos() {
-    try {
-        const isos = await apiRequest('/isos');
-        // Primary ISO selectors
-        const vmIsoPath = document.getElementById('vmIsoPath');
-        vmIsoPath.innerHTML = '<option value="">Sin ISO</option>';
-        // Secondary ISO selectors
-        const vmSecondaryIso = document.getElementById('vmSecondaryIso');
-        vmSecondaryIso.innerHTML = '<option value="">Sin ISO</option>';
+// Main Dashboard Component
+function dashboard() {
+    return {
+        // State
+        ready: false,
+        user: null,
+        vms: [],
+        volumes: [],
+        isos: [],
+        bridges: [],
+        interfaces: [],
 
-        isos.forEach(iso => {
-            // Primary ISO option
-            const option = document.createElement('option');
-            option.value = iso.path;
-            option.textContent = `${iso.name} (${iso.size_mb} MB)`;
-            vmIsoPath.appendChild(option);
-            // Secondary ISO option
-            const option2 = option.cloneNode(true);
-            vmSecondaryIso.appendChild(option2);
-        });
-    } catch (error) {
-        console.error('Error loading ISOs:', error);
-    }
-}
+        // UI State
+        currentView: 'dashboard',
+        selectedVm: null,
+        showConsole: false,
+        consoleVm: null,
+        consoleUrl: '',
 
-async function loadBridges() {
-    try {
-        availableBridges = await apiRequest('/bridges');
-    } catch (error) {
-        console.error('Error loading bridges:', error);
-        availableBridges = [];
-    }
-}
+        // Modals
+        showCreateModal: false,
+        showEditModal: false,
+        showVolumeModal: false,
+        showDeleteModal: false,
+        deleteTarget: null,
+        editTarget: null,
+        selectedVolumeToAttach: '',
 
-async function loadInterfaces() {
-    try {
-        availableInterfaces = await apiRequest('/interfaces');
-    } catch (error) {
-        console.error('Error loading interfaces:', error);
-        availableInterfaces = [];
-    }
-}
+        // Form data
+        createForm: {
+            name: '',
+            memory: 2048,
+            cpus: 2,
+            disk_size: 20,
+            iso_path: '',
+            secondary_iso_path: '',
+            cpu_model: 'host',
+            display_type: 'qxl',
+            networks: [{ type: 'nat', model: 'virtio', port_forwards: [] }],
+            boot_order: ['disk', 'cdrom']
+        },
 
-function getInterfaceOptionsHTML(selectedInterface = '') {
-    if (availableInterfaces.length === 0) {
-        return '<option value="">No hay interfaces disponibles</option>';
-    }
-    let html = '<option value="">Seleccionar interface...</option>';
-    availableInterfaces.forEach(iface => {
-        const selected = iface.name === selectedInterface ? 'selected' : '';
-        const status = iface.active ? '(activo)' : '(inactivo)';
-        html += `<option value="${iface.name}" ${selected}>${iface.name} ${status}</option>`;
-    });
-    return html;
-}
+        volumeForm: {
+            name: '',
+            size_gb: 10,
+            format: 'qcow2'
+        },
 
-function getBridgeOptionsHTML(selectedBridge = '') {
-    if (availableBridges.length === 0) {
-        return '<option value="">No hay bridges disponibles</option>';
-    }
-    let html = '<option value="">Seleccionar bridge...</option>';
-    availableBridges.forEach(br => {
-        const selected = br.name === selectedBridge ? 'selected' : '';
-        const status = br.active ? '(activo)' : '(inactivo)';
-        html += `<option value="${br.name}" ${selected}>${br.name} ${status}</option>`;
-    });
-    return html;
-}
+        // Computed
+        get runningVMs() {
+            return this.vms.filter(v => v.status === 'running').length;
+        },
+        get stoppedVMs() {
+            return this.vms.filter(v => v.status !== 'running').length;
+        },
+        get availableVolumes() {
+            if (!this.editTarget) return [];
+            // Show volumes that are not attached to any VM, excluding those already attached to the current VM
+            const attachedToThisVm = this.editTarget.volumes || [];
+            return this.volumes.filter(v => !v.attached_to && !attachedToThisVm.includes(v.id));
+        },
 
-async function loadVMs() {
-    try {
-        refreshBtn.disabled = true;
-        vmsList.innerHTML = '<div class="loading">Cargando máquinas virtuales...</div>';
-
-        const vms = await apiRequest('/vms');
-
-        if (vms.length === 0) {
-            vmsList.innerHTML = `
-                <div class="empty-state">
-                    <h2>No hay máquinas virtuales</h2>
-                    <p>Crea tu primera VM para comenzar</p>
-                </div>
-            `;
-            return;
-        }
-
-        vmsList.innerHTML = '';
-        vms.forEach(vm => {
-            vmsList.appendChild(createVMCard(vm));
-        });
-    } catch (error) {
-        showToast('Error al cargar las VMs: ' + error.message, 'error');
-        vmsList.innerHTML = '<div class="loading">Error al cargar las máquinas virtuales</div>';
-    } finally {
-        refreshBtn.disabled = false;
-    }
-}
-
-function createVMCard(vm) {
-    const card = document.createElement('div');
-    card.className = 'vm-card';
-
-    const networkInfo = vm.networks && vm.networks.length > 0
-        ? vm.networks.map(n => n.type).join(', ')
-        : 'NAT';
-
-    card.innerHTML = `
-        <div class="vm-card-header">
-            <div class="vm-name">${escapeHtml(vm.name)}</div>
-            <span class="vm-status ${vm.status}">${vm.status}</span>
-        </div>
-        <div class="vm-details">
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">Memoria:</span>
-                <span class="vm-detail-value">${vm.memory} MB</span>
-            </div>
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">CPUs:</span>
-                <span class="vm-detail-value">${vm.cpus}</span>
-            </div>
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">Disco:</span>
-                <span class="vm-detail-value">${vm.disk_size} GB</span>
-            </div>
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">Red:</span>
-                <span class="vm-detail-value">${networkInfo}</span>
-            </div>
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">CPU Model:</span>
-                <span class="vm-detail-value">${vm.cpu_model || 'host'}</span>
-            </div>
-            ${vm.volumes && vm.volumes.length > 0 ? `
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">Volúmenes:</span>
-                <span class="vm-detail-value">${vm.volumes.length}</span>
-            </div>
-            ` : ''}
-            ${vm.spice_port ? `
-            <div class="vm-detail-item">
-                <span class="vm-detail-label">SPICE Port:</span>
-                <span class="vm-detail-value">${vm.spice_port}</span>
-            </div>
-            ` : ''}
-        </div>
-        <div class="vm-actions">
-            ${vm.status === 'stopped' ?
-                `<button class="btn btn-success" onclick="startVM('${vm.id}')">▶ Iniciar</button>
-                <button class="btn btn-secondary" onclick="openEditVMModal('${vm.id}')">✏️ Editar</button>` :
-                `<button class="btn btn-warning" onclick="stopVM('${vm.id}')">⏸ Detener</button>`
+        // Initialize
+        async init() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = '/login.html';
+                return;
             }
-            ${vm.status === 'running' ?
-                `<button class="btn btn-info" onclick="openVNCConsole('${vm.id}', '${escapeHtml(vm.name)}')">🖥 Consola</button>
-                <button class="btn btn-secondary" onclick="showSpiceToolsInfo()" title="Instalar SPICE Guest Tools">❓ SPICE Tools</button>
-                <button class="btn btn-secondary" onclick="restartVM('${vm.id}')">🔄 Reiniciar</button>` :
-                ''
+
+            try {
+                this.user = await api('/auth/me');
+                await this.loadData();
+                this.ready = true;
+                this.injectModals();
+
+                // Auto-refresh every 10 seconds
+                setInterval(() => this.loadVMs(), 10000);
+            } catch (err) {
+                console.error('Init error:', err);
+                localStorage.removeItem('token');
+                window.location.href = '/login.html';
             }
-            <button class="btn btn-secondary" onclick="openSnapshotsModal('${vm.id}', '${escapeHtml(vm.name)}')">📸 Snapshots</button>
-            <button class="btn btn-secondary" onclick="showVMLogs('${vm.id}', '${escapeHtml(vm.name)}')">📋 Logs</button>
-            <button class="btn btn-danger" onclick="deleteVM('${vm.id}', '${escapeHtml(vm.name)}')">🗑 Eliminar</button>
-        </div>
-    `;
-    return card;
-}
+        },
 
-// ==================== Network Interface Functions ====================
+        async loadData() {
+            await Promise.all([
+                this.loadVMs(),
+                this.loadVolumes(),
+                this.loadIsos(),
+                this.loadBridges(),
+                this.loadInterfaces()
+            ]);
+        },
 
-function createNetworkInterfaceHTML(prefix, index, config = null) {
-    const id = `${prefix}Net${index}`;
-    const netType = config?.type || 'nat';
-    const nicModel = config?.model || 'virtio';
-    const bridgeName = config?.bridge_name || '';
-    const parentInterface = config?.parent_interface || '';
-    const portForwards = config?.port_forwards || [];
+        async loadVMs() {
+            try {
+                this.vms = await api('/vms');
+            } catch (err) {
+                console.error('Error loading VMs:', err);
+            }
+        },
 
-    let portForwardsHTML = '';
-    if (portForwards.length > 0) {
-        portForwardsHTML = portForwards.map((pf, pfIdx) => `
-            <div class="port-forward-item" data-pf-index="${pfIdx}">
-                <input type="number" placeholder="Host" value="${pf.host_port}" class="pf-host" min="1" max="65535">
-                <span>→</span>
-                <input type="number" placeholder="Guest" value="${pf.guest_port}" class="pf-guest" min="1" max="65535">
-                <select class="pf-protocol">
-                    <option value="tcp" ${pf.protocol === 'tcp' ? 'selected' : ''}>TCP</option>
-                    <option value="udp" ${pf.protocol === 'udp' ? 'selected' : ''}>UDP</option>
-                </select>
-                <button type="button" class="btn btn-danger btn-small" onclick="removePortForward(this)">✕</button>
-            </div>
-        `).join('');
-    }
+        async loadVolumes() {
+            try {
+                this.volumes = await api('/volumes');
+            } catch (err) {
+                console.error('Error loading volumes:', err);
+            }
+        },
 
-    const noBridgesWarning = availableBridges.length === 0
-        ? '<small class="help-text warning">No hay bridges en el sistema. Usa NAT o macvtap.</small>'
-        : '';
+        async loadIsos() {
+            try {
+                this.isos = await api('/isos');
+            } catch (err) {
+                console.error('Error loading ISOs:', err);
+            }
+        },
 
-    const noInterfacesWarning = availableInterfaces.length === 0
-        ? '<small class="help-text warning">No hay interfaces físicas disponibles.</small>'
-        : '';
+        async loadBridges() {
+            try {
+                this.bridges = await api('/bridges');
+            } catch (err) {
+                console.error('Error loading bridges:', err);
+            }
+        },
 
-    return `
-        <div class="network-interface" data-net-index="${index}">
-            <div class="network-interface-header">
-                <span>Interface ${index + 1}</span>
-                <button type="button" class="btn btn-danger btn-small" onclick="removeNetworkInterface(this)">✕</button>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Tipo de Red:</label>
-                    <select id="${id}Type" onchange="onNetworkTypeChange(this, '${id}')">
-                        <option value="nat" ${netType === 'nat' ? 'selected' : ''}>NAT (User networking)</option>
-                        <option value="macvtap" ${netType === 'macvtap' ? 'selected' : ''}>Macvtap (IP del router)</option>
-                        <option value="bridge" ${netType === 'bridge' ? 'selected' : ''} ${availableBridges.length === 0 ? 'disabled' : ''}>Bridge ${availableBridges.length === 0 ? '(no disponible)' : ''}</option>
-                        <option value="isolated" ${netType === 'isolated' ? 'selected' : ''}>Isolated</option>
-                    </select>
+        async loadInterfaces() {
+            try {
+                this.interfaces = await api('/interfaces');
+            } catch (err) {
+                console.error('Error loading interfaces:', err);
+            }
+        },
+
+        // VM Actions
+        async startVM(id) {
+            try {
+                await api(`/vms/${id}/start`, { method: 'POST' });
+                this.showToast('VM started successfully', 'success');
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async stopVM(id) {
+            try {
+                await api(`/vms/${id}/stop`, { method: 'POST' });
+                this.showToast('VM stopped successfully', 'success');
+                await this.loadVMs();
+                if (this.consoleVm?.id === id) {
+                    this.closeConsole();
+                }
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async createVM() {
+            try {
+                const data = { ...this.createForm };
+                if (!data.iso_path) delete data.iso_path;
+                if (!data.secondary_iso_path) delete data.secondary_iso_path;
+
+                await api('/vms', {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+                this.showToast('VM created successfully', 'success');
+                this.showCreateModal = false;
+                this.resetCreateForm();
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async updateVM() {
+            if (!this.editTarget) return;
+            try {
+                const data = {
+                    memory: this.editTarget.memory,
+                    cpus: this.editTarget.cpus,
+                    iso_path: this.editTarget.iso_path || null,
+                    secondary_iso_path: this.editTarget.secondary_iso_path || null,
+                    cpu_model: this.editTarget.cpu_model,
+                    display_type: this.editTarget.display_type,
+                    networks: this.editTarget.networks,
+                    boot_order: this.editTarget.boot_order
+                };
+
+                await api(`/vms/${this.editTarget.id}`, {
+                    method: 'PUT',
+                    body: JSON.stringify(data)
+                });
+                this.showToast('VM updated successfully', 'success');
+                this.showEditModal = false;
+                this.editTarget = null;
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async deleteVM() {
+            if (!this.deleteTarget) return;
+            try {
+                await api(`/vms/${this.deleteTarget.id}`, { method: 'DELETE' });
+                this.showToast('VM deleted successfully', 'success');
+                this.showDeleteModal = false;
+                this.deleteTarget = null;
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        // Volume Actions
+        async createVolume() {
+            try {
+                await api('/volumes', {
+                    method: 'POST',
+                    body: JSON.stringify(this.volumeForm)
+                });
+                this.showToast('Volume created successfully', 'success');
+                this.showVolumeModal = false;
+                this.volumeForm = { name: '', size_gb: 10, format: 'qcow2' };
+                await this.loadVolumes();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async deleteVolume(vol) {
+            if (!confirm(`Delete volume "${vol.name}"?`)) return;
+            try {
+                await api(`/volumes/${vol.id}`, { method: 'DELETE' });
+                this.showToast('Volume deleted', 'success');
+                await this.loadVolumes();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        // Volume attach/detach for edit modal
+        getVolumeName(volId) {
+            const vol = this.volumes.find(v => v.id === volId);
+            return vol ? `${vol.name} (${vol.size_gb}GB)` : volId;
+        },
+
+        async attachVolume() {
+            if (!this.selectedVolumeToAttach || !this.editTarget) return;
+            try {
+                await api(`/vms/${this.editTarget.id}/volumes/${this.selectedVolumeToAttach}`, { method: 'POST' });
+                this.showToast('Volume attached', 'success');
+                // Update local state
+                if (!this.editTarget.volumes) this.editTarget.volumes = [];
+                this.editTarget.volumes.push(this.selectedVolumeToAttach);
+                this.selectedVolumeToAttach = '';
+                await this.loadVolumes();
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async detachVolume(volId) {
+            if (!this.editTarget) return;
+            try {
+                await api(`/vms/${this.editTarget.id}/volumes/${volId}`, { method: 'DELETE' });
+                this.showToast('Volume detached', 'success');
+                // Update local state
+                this.editTarget.volumes = this.editTarget.volumes.filter(v => v !== volId);
+                await this.loadVolumes();
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        // Console
+        async openConsole(vm) {
+            try {
+                const info = await api(`/vms/${vm.id}/spice`);
+                const token = localStorage.getItem('token');
+                // Build the SPICE HTML5 client URL with proper parameters including vm_id and token for reconnection
+                this.consoleUrl = `/spice/spice_auto.html?host=localhost&port=${info.ws_port}&vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
+                this.consoleVm = vm;
+                this.showConsole = true;
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        closeConsole() {
+            this.showConsole = false;
+            this.consoleVm = null;
+            this.consoleUrl = '';
+        },
+
+        toggleFullscreen() {
+            const frame = document.getElementById('consoleFrame');
+            if (frame.requestFullscreen) {
+                frame.requestFullscreen();
+            }
+        },
+
+        // UI Helpers
+        selectVm(vm) {
+            this.selectedVm = vm;
+            this.currentView = 'dashboard';
+        },
+
+        editVm(vm) {
+            this.editTarget = JSON.parse(JSON.stringify(vm));
+            this.showEditModal = true;
+        },
+
+        confirmDelete(vm) {
+            this.deleteTarget = vm;
+            this.showDeleteModal = true;
+        },
+
+        resetCreateForm() {
+            this.createForm = {
+                name: '',
+                memory: 2048,
+                cpus: 2,
+                disk_size: 20,
+                iso_path: '',
+                secondary_iso_path: '',
+                cpu_model: 'host',
+                display_type: 'qxl',
+                networks: [{ type: 'nat', model: 'virtio', port_forwards: [] }],
+                boot_order: ['disk', 'cdrom']
+            };
+        },
+
+        addNetwork(form) {
+            const target = form === 'edit' ? this.editTarget : this.createForm;
+            target.networks.push({ type: 'nat', model: 'virtio', port_forwards: [] });
+        },
+
+        removeNetwork(form, index) {
+            const target = form === 'edit' ? this.editTarget : this.createForm;
+            target.networks.splice(index, 1);
+        },
+
+        logout() {
+            localStorage.removeItem('token');
+            window.location.href = '/login.html';
+        },
+
+        showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            toast.textContent = message;
+            toast.className = `toast show ${type}`;
+            setTimeout(() => toast.className = 'toast', 3000);
+        },
+
+        // Inject modals HTML
+        injectModals() {
+            document.getElementById('modals').innerHTML = `
+                <!-- Toast -->
+                <div id="toast" class="fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300 z-50 bg-slate-700 text-white">
+                    Message
                 </div>
-                <div class="form-group">
-                    <label>Modelo NIC:</label>
-                    <select id="${id}Model">
-                        <option value="virtio" ${nicModel === 'virtio' ? 'selected' : ''}>Virtio (Mejor rendimiento)</option>
-                        <option value="e1000" ${nicModel === 'e1000' ? 'selected' : ''}>e1000 (Compatible Windows)</option>
-                        <option value="rtl8139" ${nicModel === 'rtl8139' ? 'selected' : ''}>RTL8139 (Legacy)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group bridge-config" id="${id}BridgeConfig" style="display: ${netType === 'bridge' ? 'block' : 'none'};">
-                    <label>Bridge:</label>
-                    <select id="${id}Bridge">
-                        ${getBridgeOptionsHTML(bridgeName)}
-                    </select>
-                    ${noBridgesWarning}
-                </div>
-                <div class="form-group macvtap-config" id="${id}MacvtapConfig" style="display: ${netType === 'macvtap' ? 'block' : 'none'};">
-                    <label>Interface Física:</label>
-                    <select id="${id}ParentInterface">
-                        ${getInterfaceOptionsHTML(parentInterface)}
-                    </select>
-                    ${noInterfacesWarning}
-                    <div class="macvtap-help">
-                        <div class="help-header" onclick="toggleMacvtapHelp('${id}')">
-                            <span>⚠️ Requiere configuración de permisos</span>
-                            <span class="help-toggle">▶</span>
+                <style>
+                    .toast.show { transform: translateY(0); opacity: 1; }
+                    .toast.success { background: #059669; }
+                    .toast.error { background: #dc2626; }
+                </style>
+
+                <!-- Create VM Modal -->
+                <div x-show="showCreateModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showCreateModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Create New VM</h2>
+                            <button @click="showCreateModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                         </div>
-                        <div class="help-content" id="${id}MacvtapHelp" style="display: none;">
-                            <p>Ejecuta este comando en una terminal para permitir macvtap:</p>
-                            <div class="command-block">
-                                <code id="${id}MacvtapCmd">sudo sh -c "echo '$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/ip link *' > /etc/sudoers.d/qemu-macvtap && echo '$(whoami) ALL=(ALL) NOPASSWD: /bin/chmod 666 /dev/tap*' >> /etc/sudoers.d/qemu-macvtap && chmod 440 /etc/sudoers.d/qemu-macvtap"</code>
-                                <button type="button" class="btn btn-small btn-secondary" onclick="copyMacvtapCommand('${id}')">📋 Copiar</button>
+                        <form @submit.prevent="createVM()" class="p-6 space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Name</label>
+                                    <input x-model="createForm.name" type="text" required class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Memory (MB)</label>
+                                    <input x-model.number="createForm.memory" type="number" min="512" max="32768" step="256" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">CPUs</label>
+                                    <input x-model.number="createForm.cpus" type="number" min="1" max="16" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Disk Size (GB)</label>
+                                    <input x-model.number="createForm.disk_size" type="number" min="5" max="500" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
                             </div>
-                            <small class="help-text">Después de ejecutar el comando, la VM obtendrá una IP del router (mismo rango que el host).</small>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">ISO</label>
+                                    <select x-model="createForm.iso_path" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="">No ISO</option>
+                                        <template x-for="iso in isos" :key="iso.path"><option :value="iso.path" x-text="iso.name"></option></template>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Secondary ISO</label>
+                                    <select x-model="createForm.secondary_iso_path" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="">No ISO</option>
+                                        <template x-for="iso in isos" :key="iso.path"><option :value="iso.path" x-text="iso.name"></option></template>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">CPU Model</label>
+                                    <select x-model="createForm.cpu_model" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="host">host (Best performance)</option>
+                                        <option value="qemu64">qemu64 (Max compatibility)</option>
+                                        <option value="max">max</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Display</label>
+                                    <select x-model="createForm.display_type" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="qxl">QXL (SPICE optimized)</option>
+                                        <option value="virtio">Virtio</option>
+                                        <option value="std">Standard VGA</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Networks -->
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-sm text-slate-400">Networks</label>
+                                    <button type="button" @click="addNetwork('create')" class="text-xs text-primary-400 hover:text-primary-300">+ Add</button>
+                                </div>
+                                <template x-for="(net, idx) in createForm.networks" :key="idx">
+                                    <div class="flex items-center space-x-2 mb-2 bg-slate-700/50 p-2 rounded-lg">
+                                        <select x-model="net.type" class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                            <option value="nat">NAT</option>
+                                            <option value="bridge">Bridge</option>
+                                            <option value="macvtap">Macvtap</option>
+                                        </select>
+                                        <select x-model="net.model" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                            <option value="virtio">Virtio</option>
+                                            <option value="e1000">e1000</option>
+                                            <option value="rtl8139">RTL8139</option>
+                                        </select>
+                                        <template x-if="net.type === 'bridge'">
+                                            <select x-model="net.bridge_name" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                                <template x-for="br in bridges"><option :value="br" x-text="br"></option></template>
+                                            </select>
+                                        </template>
+                                        <template x-if="net.type === 'macvtap'">
+                                            <select x-model="net.parent_interface" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                                <template x-for="iface in interfaces"><option :value="iface" x-text="iface"></option></template>
+                                            </select>
+                                        </template>
+                                        <button type="button" @click="removeNetwork('create', idx)" x-show="createForm.networks.length > 1" class="text-red-400 hover:text-red-300 p-1">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                    </div>
+                                </template>
+                            </div>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showCreateModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Create VM</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Edit VM Modal -->
+                <div x-show="showEditModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showEditModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Edit VM - <span x-text="editTarget?.name"></span></h2>
+                            <button @click="showEditModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <form @submit.prevent="updateVM()" class="p-6 space-y-4" x-show="editTarget">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Memory (MB)</label>
+                                    <input x-model.number="editTarget.memory" type="number" min="512" max="32768" step="256" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">CPUs</label>
+                                    <input x-model.number="editTarget.cpus" type="number" min="1" max="16" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">ISO</label>
+                                    <select x-model="editTarget.iso_path" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="">No ISO</option>
+                                        <template x-for="iso in isos" :key="iso.path"><option :value="iso.path" x-text="iso.name"></option></template>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Secondary ISO</label>
+                                    <select x-model="editTarget.secondary_iso_path" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="">No ISO</option>
+                                        <template x-for="iso in isos" :key="iso.path"><option :value="iso.path" x-text="iso.name"></option></template>
+                                    </select>
+                                </div>
+                            </div>
+                            <!-- Networks -->
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-sm text-slate-400">Networks</label>
+                                    <button type="button" @click="addNetwork('edit')" class="text-xs text-primary-400 hover:text-primary-300">+ Add</button>
+                                </div>
+                                <template x-for="(net, idx) in editTarget.networks" :key="idx">
+                                    <div class="flex items-center space-x-2 mb-2 bg-slate-700/50 p-2 rounded-lg">
+                                        <select x-model="net.type" class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                            <option value="nat">NAT</option>
+                                            <option value="bridge">Bridge</option>
+                                            <option value="macvtap">Macvtap</option>
+                                        </select>
+                                        <select x-model="net.model" class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                            <option value="virtio">Virtio</option>
+                                            <option value="e1000">e1000</option>
+                                            <option value="rtl8139">RTL8139</option>
+                                        </select>
+                                        <button type="button" @click="removeNetwork('edit', idx)" x-show="editTarget.networks.length > 1" class="text-red-400 hover:text-red-300 p-1">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                        </button>
+                                    </div>
+                                </template>
+                            </div>
+                            <!-- Volumes -->
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-sm text-slate-400">Attached Volumes</label>
+                                </div>
+                                <div class="space-y-2 mb-2">
+                                    <template x-for="volId in editTarget.volumes" :key="volId">
+                                        <div class="flex items-center justify-between bg-slate-700/50 p-2 rounded-lg">
+                                            <span class="text-sm" x-text="getVolumeName(volId)"></span>
+                                            <button type="button" @click="detachVolume(volId)" class="text-red-400 hover:text-red-300 p-1" title="Detach">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                            </button>
+                                        </div>
+                                    </template>
+                                    <p x-show="!editTarget.volumes || editTarget.volumes.length === 0" class="text-slate-500 text-sm">No volumes attached</p>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <select x-model="selectedVolumeToAttach" class="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm">
+                                        <option value="">Select volume...</option>
+                                        <template x-for="vol in availableVolumes" :key="vol.id">
+                                            <option :value="vol.id" x-text="vol.name + ' (' + vol.size_gb + 'GB)'"></option>
+                                        </template>
+                                    </select>
+                                    <button type="button" @click="attachVolume()" :disabled="!selectedVolumeToAttach" class="px-3 py-1 bg-primary-600 hover:bg-primary-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm">Attach</button>
+                                </div>
+                            </div>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showEditModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Delete Confirmation Modal -->
+                <div x-show="showDeleteModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showDeleteModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-md" @click.stop>
+                        <div class="p-6">
+                            <div class="w-12 h-12 bg-red-600/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <svg class="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            </div>
+                            <h3 class="text-lg font-semibold text-center mb-2">Delete VM</h3>
+                            <p class="text-slate-400 text-center mb-6">Are you sure you want to delete "<span x-text="deleteTarget?.name"></span>"? This action cannot be undone.</p>
+                            <div class="flex space-x-3">
+                                <button @click="showDeleteModal = false" class="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button @click="deleteVM()" class="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg">Delete</button>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-            <div class="port-forwards-section" id="${id}PortForwards" style="display: ${netType === 'nat' ? 'block' : 'none'};">
-                <label>Port Forwards:</label>
-                <div class="port-forwards-list" id="${id}PortForwardsList">
-                    ${portForwardsHTML}
-                </div>
-                <button type="button" class="btn btn-secondary btn-small" onclick="addPortForward('${id}')">+ Añadir Port Forward</button>
-            </div>
-        </div>
-    `;
-}
 
-function addNetworkInterface(mode = 'create') {
-    const container = mode === 'edit'
-        ? document.getElementById('editNetworkInterfaces')
-        : document.getElementById('networkInterfaces');
-    const prefix = mode === 'edit' ? 'edit' : 'create';
-    const counter = mode === 'edit' ? editNetworkInterfaceCounter++ : networkInterfaceCounter++;
-
-    container.insertAdjacentHTML('beforeend', createNetworkInterfaceHTML(prefix, counter));
-}
-
-function removeNetworkInterface(btn) {
-    const netInterface = btn.closest('.network-interface');
-    netInterface.remove();
-}
-
-function onNetworkTypeChange(select, id) {
-    const bridgeConfig = document.getElementById(`${id}BridgeConfig`);
-    const macvtapConfig = document.getElementById(`${id}MacvtapConfig`);
-    const portForwards = document.getElementById(`${id}PortForwards`);
-
-    // Hide all config sections first
-    bridgeConfig.style.display = 'none';
-    macvtapConfig.style.display = 'none';
-    portForwards.style.display = 'none';
-
-    if (select.value === 'bridge') {
-        bridgeConfig.style.display = 'block';
-    } else if (select.value === 'macvtap') {
-        macvtapConfig.style.display = 'block';
-    } else if (select.value === 'nat') {
-        portForwards.style.display = 'block';
-    }
-}
-
-function addPortForward(netId) {
-    const list = document.getElementById(`${netId}PortForwardsList`);
-    const html = `
-        <div class="port-forward-item">
-            <input type="number" placeholder="Host" class="pf-host" min="1" max="65535">
-            <span>→</span>
-            <input type="number" placeholder="Guest" class="pf-guest" min="1" max="65535">
-            <select class="pf-protocol">
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-            </select>
-            <button type="button" class="btn btn-danger btn-small" onclick="removePortForward(this)">✕</button>
-        </div>
-    `;
-    list.insertAdjacentHTML('beforeend', html);
-}
-
-function removePortForward(btn) {
-    btn.closest('.port-forward-item').remove();
-}
-
-function getNetworkConfigs(containerId) {
-    const container = document.getElementById(containerId);
-    const interfaces = container.querySelectorAll('.network-interface');
-    const networks = [];
-
-    interfaces.forEach((iface, idx) => {
-        const typeSelect = iface.querySelector('select[id$="Type"]');
-        const modelSelect = iface.querySelector('select[id$="Model"]');
-        const bridgeSelect = iface.querySelector('select[id$="Bridge"]');
-        const parentInterfaceSelect = iface.querySelector('select[id$="ParentInterface"]');
-        const portForwardItems = iface.querySelectorAll('.port-forward-item');
-
-        const network = {
-            type: typeSelect.value,
-            model: modelSelect ? modelSelect.value : 'virtio',
-            bridge_name: typeSelect.value === 'bridge' && bridgeSelect ? bridgeSelect.value : null,
-            parent_interface: typeSelect.value === 'macvtap' && parentInterfaceSelect ? parentInterfaceSelect.value : null,
-            port_forwards: []
-        };
-
-        if (typeSelect.value === 'nat') {
-            portForwardItems.forEach(pf => {
-                const hostPort = parseInt(pf.querySelector('.pf-host').value);
-                const guestPort = parseInt(pf.querySelector('.pf-guest').value);
-                const protocol = pf.querySelector('.pf-protocol').value;
-
-                if (hostPort && guestPort) {
-                    network.port_forwards.push({
-                        host_port: hostPort,
-                        guest_port: guestPort,
-                        protocol: protocol
-                    });
-                }
-            });
-        }
-
-        networks.push(network);
-    });
-
-    return networks.length > 0 ? networks : [{ type: 'nat', model: 'virtio', port_forwards: [] }];
-}
-
-// ==================== Boot Order Functions ====================
-
-function getBootOrder(containerId) {
-    const container = document.getElementById(containerId);
-    const items = container.querySelectorAll('.boot-order-item');
-    const order = [];
-
-    items.forEach(item => {
-        const checkbox = item.querySelector('input[type="checkbox"]');
-        if (checkbox.checked) {
-            order.push(item.dataset.device);
-        }
-    });
-
-    return order.length > 0 ? order : ['disk', 'cdrom'];
-}
-
-function setBootOrder(containerId, bootOrder) {
-    const container = document.getElementById(containerId);
-    const items = container.querySelectorAll('.boot-order-item');
-
-    items.forEach(item => {
-        const checkbox = item.querySelector('input[type="checkbox"]');
-        checkbox.checked = bootOrder.includes(item.dataset.device);
-    });
-}
-
-// ==================== Section Toggle ====================
-
-function toggleSection(sectionId) {
-    const section = document.getElementById(sectionId);
-    const title = section.previousElementSibling;
-    const icon = title.querySelector('.collapse-icon');
-
-    if (section.style.display === 'none') {
-        section.style.display = 'block';
-        icon.textContent = '▼';
-    } else {
-        section.style.display = 'none';
-        icon.textContent = '▶';
-    }
-}
-
-// ==================== VM CRUD Functions ====================
-
-async function handleCreateVM(e) {
-    e.preventDefault();
-
-    const formData = new FormData(createVmForm);
-    const vmData = {
-        name: formData.get('name'),
-        memory: parseInt(formData.get('memory')),
-        cpus: parseInt(formData.get('cpus')),
-        disk_size: parseInt(formData.get('disk_size')),
-        iso_path: formData.get('iso_path') || null,
-        secondary_iso_path: formData.get('secondary_iso_path') || null,
-        networks: getNetworkConfigs('networkInterfaces'),
-        boot_order: getBootOrder('bootOrderContainer'),
-        cpu_model: document.getElementById('vmCpuModel').value,
-        display_type: document.getElementById('vmDisplayType').value
-    };
-
-    try {
-        const submitBtn = createVmForm.querySelector('button[type="submit"]');
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Creando...';
-
-        const response = await apiRequest('/vms', {
-            method: 'POST',
-            body: JSON.stringify(vmData)
-        });
-
-        showToast(response.message, 'success');
-        closeCreateModal();
-        createVmForm.reset();
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al crear VM: ' + error.message, 'error');
-    } finally {
-        const submitBtn = createVmForm.querySelector('button[type="submit"]');
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Crear VM';
-    }
-}
-
-async function startVM(vmId) {
-    try {
-        showToast('Iniciando VM...', 'info');
-        const response = await apiRequest(`/vms/${vmId}/start`, { method: 'POST' });
-        showToast(response.message, 'success');
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al iniciar VM: ' + error.message, 'error');
-    }
-}
-
-async function stopVM(vmId) {
-    try {
-        showToast('Deteniendo VM...', 'info');
-        const response = await apiRequest(`/vms/${vmId}/stop`, { method: 'POST' });
-        showToast(response.message, 'success');
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al detener VM: ' + error.message, 'error');
-    }
-}
-
-async function restartVM(vmId) {
-    try {
-        showToast('Reiniciando VM...', 'info');
-        const response = await apiRequest(`/vms/${vmId}/restart`, { method: 'POST' });
-        showToast(response.message, 'success');
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al reiniciar VM: ' + error.message, 'error');
-    }
-}
-
-async function deleteVM(vmId, vmName) {
-    if (!confirm(`¿Eliminar la VM "${vmName}"?\n\nEsta acción no se puede deshacer.`)) {
-        return;
-    }
-
-    try {
-        showToast('Eliminando VM...', 'info');
-        const response = await apiRequest(`/vms/${vmId}`, { method: 'DELETE' });
-        showToast(response.message, 'success');
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al eliminar VM: ' + error.message, 'error');
-    }
-}
-
-// ==================== Edit VM Functions ====================
-
-async function openEditVMModal(vmId) {
-    try {
-        currentEditVmId = vmId;
-        editNetworkInterfaceCounter = 0;
-
-        const vm = await apiRequest(`/vms/${vmId}`);
-        const isos = await apiRequest('/isos');
-        const volumes = await apiRequest('/volumes');
-
-        // Basic settings
-        editVmNameDisplay.textContent = vm.name;
-        editVmMemory.value = vm.memory;
-        editVmCpus.value = vm.cpus;
-
-        // ISO dropdowns
-        editVmIso.innerHTML = '<option value="">Sin ISO</option>';
-        const editVmSecondaryIso = document.getElementById('editVmSecondaryIso');
-        editVmSecondaryIso.innerHTML = '<option value="">Sin ISO</option>';
-        isos.forEach(iso => {
-            const option = document.createElement('option');
-            option.value = iso.path;
-            option.textContent = `${iso.name} (${iso.size_mb} MB)`;
-            if (vm.iso_path === iso.path) option.selected = true;
-            editVmIso.appendChild(option);
-            // Secondary ISO
-            const option2 = document.createElement('option');
-            option2.value = iso.path;
-            option2.textContent = `${iso.name} (${iso.size_mb} MB)`;
-            if (vm.secondary_iso_path === iso.path) option2.selected = true;
-            editVmSecondaryIso.appendChild(option2);
-        });
-
-        // Network interfaces
-        const editNetworkInterfaces = document.getElementById('editNetworkInterfaces');
-        editNetworkInterfaces.innerHTML = '';
-        const networks = vm.networks || [{ type: 'nat', port_forwards: [] }];
-        networks.forEach((net, idx) => {
-            editNetworkInterfaces.insertAdjacentHTML('beforeend',
-                createNetworkInterfaceHTML('edit', idx, net));
-            editNetworkInterfaceCounter++;
-        });
-
-        // Hardware options
-        document.getElementById('editVmCpuModel').value = vm.cpu_model || 'host';
-        document.getElementById('editVmDisplayType').value = vm.display_type || 'std';
-        setBootOrder('editBootOrderContainer', vm.boot_order || ['disk', 'cdrom']);
-
-        // Attached volumes
-        await loadAttachedVolumes(vmId, vm.volumes || [], volumes);
-
-        editVmModal.style.display = 'block';
-    } catch (error) {
-        showToast('Error al abrir editor: ' + error.message, 'error');
-        console.error('Error al abrir editor:', error);
-    }
-}
-
-async function loadAttachedVolumes(vmId, attachedVolIds, allVolumes) {
-    const attachedContainer = document.getElementById('attachedVolumes');
-    const availableSelect = document.getElementById('availableVolumes');
-
-    // Show attached volumes
-    if (attachedVolIds.length === 0) {
-        attachedContainer.innerHTML = '<p class="empty-text">No hay volúmenes adjuntos</p>';
-    } else {
-        attachedContainer.innerHTML = attachedVolIds.map(volId => {
-            const vol = allVolumes.find(v => v.id === volId);
-            if (!vol) return '';
-            return `
-                <div class="attached-volume-item">
-                    <span>${escapeHtml(vol.name)} (${vol.size_gb} GB, ${vol.format})</span>
-                    <button type="button" class="btn btn-danger btn-small"
-                            onclick="detachVolumeFromVm('${volId}')">Desadjuntar</button>
+                <!-- Create Volume Modal -->
+                <div x-show="showVolumeModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showVolumeModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-md" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Create Volume</h2>
+                            <button @click="showVolumeModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <form @submit.prevent="createVolume()" class="p-6 space-y-4">
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Name</label>
+                                <input x-model="volumeForm.name" type="text" required class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Size (GB)</label>
+                                    <input x-model.number="volumeForm.size_gb" type="number" min="1" max="1000" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Format</label>
+                                    <select x-model="volumeForm.format" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                        <option value="qcow2">qcow2</option>
+                                        <option value="raw">raw</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showVolumeModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Create</button>
+                            </div>
+                        </form>
+                    </div>
                 </div>
             `;
-        }).join('');
-    }
-
-    // Populate available volumes (not attached to any VM)
-    const available = allVolumes.filter(v => !v.attached_to);
-    availableSelect.innerHTML = '<option value="">Seleccionar volumen...</option>';
-    available.forEach(vol => {
-        const option = document.createElement('option');
-        option.value = vol.id;
-        option.textContent = `${vol.name} (${vol.size_gb} GB, ${vol.format})`;
-        availableSelect.appendChild(option);
-    });
-}
-
-async function attachVolumeToVm() {
-    const volId = document.getElementById('availableVolumes').value;
-    if (!volId || !currentEditVmId) return;
-
-    try {
-        await apiRequest(`/vms/${currentEditVmId}/volumes/${volId}`, { method: 'POST' });
-        showToast('Volumen adjuntado', 'success');
-
-        // Reload volumes
-        const vm = await apiRequest(`/vms/${currentEditVmId}`);
-        const volumes = await apiRequest('/volumes');
-        await loadAttachedVolumes(currentEditVmId, vm.volumes || [], volumes);
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-async function detachVolumeFromVm(volId) {
-    if (!currentEditVmId) return;
-
-    try {
-        await apiRequest(`/vms/${currentEditVmId}/volumes/${volId}`, { method: 'DELETE' });
-        showToast('Volumen desadjuntado', 'success');
-
-        // Reload volumes
-        const vm = await apiRequest(`/vms/${currentEditVmId}`);
-        const volumes = await apiRequest('/volumes');
-        await loadAttachedVolumes(currentEditVmId, vm.volumes || [], volumes);
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-async function handleEditVM(e) {
-    e.preventDefault();
-    if (!currentEditVmId) return;
-
-    const updates = {
-        memory: parseInt(editVmMemory.value),
-        cpus: parseInt(editVmCpus.value),
-        iso_path: editVmIso.value || null,
-        secondary_iso_path: document.getElementById('editVmSecondaryIso').value || null,
-        networks: getNetworkConfigs('editNetworkInterfaces'),
-        boot_order: getBootOrder('editBootOrderContainer'),
-        cpu_model: document.getElementById('editVmCpuModel').value,
-        display_type: document.getElementById('editVmDisplayType').value
+        }
     };
-
-    try {
-        const submitBtn = editVmForm.querySelector('button[type="submit"]');
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Guardando...';
-
-        const response = await apiRequest(`/vms/${currentEditVmId}`, {
-            method: 'PUT',
-            body: JSON.stringify(updates)
-        });
-
-        showToast(response.message, 'success');
-        closeEditVmModal();
-        await loadVMs();
-    } catch (error) {
-        showToast('Error al actualizar VM: ' + error.message, 'error');
-    } finally {
-        const submitBtn = editVmForm.querySelector('button[type="submit"]');
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Guardar Cambios';
-    }
-}
-
-function closeEditVmModal() {
-    editVmModal.style.display = 'none';
-    currentEditVmId = null;
-    editVmForm.reset();
-}
-
-// ==================== Volumes Functions ====================
-
-function openVolumesModal() {
-    volumesModal.style.display = 'block';
-    loadVolumes();
-}
-
-function closeVolumesModal() {
-    volumesModal.style.display = 'none';
-    hideCreateVolumeForm();
-}
-
-async function loadVolumes() {
-    try {
-        volumesList.innerHTML = '<div class="loading">Cargando volúmenes...</div>';
-        const volumes = await apiRequest('/volumes');
-
-        if (volumes.length === 0) {
-            volumesList.innerHTML = '<div class="empty-state"><p>No hay volúmenes creados</p></div>';
-            return;
-        }
-
-        volumesList.innerHTML = volumes.map(vol => `
-            <div class="volume-card">
-                <div class="volume-header">
-                    <span class="volume-name">${escapeHtml(vol.name)}</span>
-                    <span class="volume-status ${vol.attached_to ? 'attached' : 'available'}">
-                        ${vol.attached_to ? 'Adjunto' : 'Disponible'}
-                    </span>
-                </div>
-                <div class="volume-details">
-                    <span>${vol.size_gb} GB</span>
-                    <span>${vol.format}</span>
-                </div>
-                <div class="volume-actions">
-                    ${!vol.attached_to ? `
-                        <button class="btn btn-danger btn-small" onclick="deleteVolume('${vol.id}', '${escapeHtml(vol.name)}')">
-                            🗑 Eliminar
-                        </button>
-                    ` : '<span class="help-text">Desadjuntar primero</span>'}
-                </div>
-            </div>
-        `).join('');
-    } catch (error) {
-        volumesList.innerHTML = '<div class="error">Error al cargar volúmenes</div>';
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-function showCreateVolumeForm() {
-    document.getElementById('createVolumeForm').style.display = 'block';
-}
-
-function hideCreateVolumeForm() {
-    document.getElementById('createVolumeForm').style.display = 'none';
-    document.getElementById('volName').value = '';
-    document.getElementById('volSize').value = '10';
-    document.getElementById('volFormat').value = 'qcow2';
-}
-
-async function createVolume() {
-    const name = document.getElementById('volName').value.trim();
-    const size = parseInt(document.getElementById('volSize').value);
-    const format = document.getElementById('volFormat').value;
-
-    if (!name) {
-        showToast('El nombre es requerido', 'error');
-        return;
-    }
-
-    try {
-        showToast('Creando volumen...', 'info');
-        await apiRequest('/volumes', {
-            method: 'POST',
-            body: JSON.stringify({ name, size_gb: size, format })
-        });
-        showToast('Volumen creado', 'success');
-        hideCreateVolumeForm();
-        loadVolumes();
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-async function deleteVolume(volId, volName) {
-    if (!confirm(`¿Eliminar el volumen "${volName}"?`)) return;
-
-    try {
-        await apiRequest(`/volumes/${volId}`, { method: 'DELETE' });
-        showToast('Volumen eliminado', 'success');
-        loadVolumes();
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-// ==================== Snapshots Functions ====================
-
-function openSnapshotsModal(vmId, vmName) {
-    currentSnapshotsVmId = vmId;
-    snapshotsVmName.textContent = vmName;
-    snapshotsModal.style.display = 'block';
-    loadSnapshots(vmId);
-}
-
-function closeSnapshotsModal() {
-    snapshotsModal.style.display = 'none';
-    currentSnapshotsVmId = null;
-    hideCreateSnapshotForm();
-}
-
-async function loadSnapshots(vmId) {
-    try {
-        snapshotsList.innerHTML = '<div class="loading">Cargando snapshots...</div>';
-        const snapshots = await apiRequest(`/vms/${vmId}/snapshots`);
-
-        if (snapshots.length === 0) {
-            snapshotsList.innerHTML = '<div class="empty-state"><p>No hay snapshots</p></div>';
-            return;
-        }
-
-        snapshotsList.innerHTML = snapshots.map(snap => `
-            <div class="snapshot-item">
-                <div class="snapshot-info">
-                    <span class="snapshot-name">${escapeHtml(snap.name)}</span>
-                    <span class="snapshot-date">${new Date(snap.created_at).toLocaleString()}</span>
-                    ${snap.description ? `<span class="snapshot-desc">${escapeHtml(snap.description)}</span>` : ''}
-                    ${snap.vm_size ? `<span class="snapshot-size">${snap.vm_size}</span>` : ''}
-                </div>
-                <div class="snapshot-actions">
-                    <button class="btn btn-success btn-small" onclick="restoreSnapshot('${snap.id}')">
-                        ↩ Restaurar
-                    </button>
-                    <button class="btn btn-danger btn-small" onclick="deleteSnapshot('${snap.id}', '${escapeHtml(snap.name)}')">
-                        🗑 Eliminar
-                    </button>
-                </div>
-            </div>
-        `).join('');
-    } catch (error) {
-        snapshotsList.innerHTML = '<div class="error">Error al cargar snapshots</div>';
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-function showCreateSnapshotForm() {
-    document.getElementById('createSnapshotForm').style.display = 'block';
-}
-
-function hideCreateSnapshotForm() {
-    document.getElementById('createSnapshotForm').style.display = 'none';
-    document.getElementById('snapName').value = '';
-    document.getElementById('snapDescription').value = '';
-}
-
-async function createSnapshot() {
-    if (!currentSnapshotsVmId) return;
-
-    const name = document.getElementById('snapName').value.trim();
-    const description = document.getElementById('snapDescription').value.trim();
-
-    if (!name) {
-        showToast('El nombre es requerido', 'error');
-        return;
-    }
-
-    try {
-        showToast('Creando snapshot...', 'info');
-        await apiRequest(`/vms/${currentSnapshotsVmId}/snapshots`, {
-            method: 'POST',
-            body: JSON.stringify({ name, description: description || null })
-        });
-        showToast('Snapshot creado', 'success');
-        hideCreateSnapshotForm();
-        loadSnapshots(currentSnapshotsVmId);
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-async function restoreSnapshot(snapId) {
-    if (!currentSnapshotsVmId) return;
-
-    if (!confirm('¿Restaurar este snapshot? Se perderán los cambios actuales.')) return;
-
-    try {
-        showToast('Restaurando snapshot...', 'info');
-        await apiRequest(`/vms/${currentSnapshotsVmId}/snapshots/${snapId}/restore`, {
-            method: 'POST'
-        });
-        showToast('Snapshot restaurado', 'success');
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-async function deleteSnapshot(snapId, snapName) {
-    if (!currentSnapshotsVmId) return;
-
-    if (!confirm(`¿Eliminar el snapshot "${snapName}"?`)) return;
-
-    try {
-        await apiRequest(`/vms/${currentSnapshotsVmId}/snapshots/${snapId}`, {
-            method: 'DELETE'
-        });
-        showToast('Snapshot eliminado', 'success');
-        loadSnapshots(currentSnapshotsVmId);
-    } catch (error) {
-        showToast('Error: ' + error.message, 'error');
-    }
-}
-
-// ==================== UI Helper Functions ====================
-
-function openModal() {
-    // Reset network interfaces
-    networkInterfaceCounter = 0;
-    const networkInterfaces = document.getElementById('networkInterfaces');
-    networkInterfaces.innerHTML = '';
-    addNetworkInterface('create');
-
-    // Load ISOs
-    loadIsos();
-
-    createVmModal.style.display = 'block';
-    document.getElementById('vmName').focus();
-}
-
-function closeCreateModal() {
-    createVmModal.style.display = 'none';
-    createVmForm.reset();
-}
-
-function showToast(message, type = 'info') {
-    toast.textContent = message;
-    toast.className = `toast ${type}`;
-    toast.style.display = 'block';
-
-    setTimeout(() => {
-        toast.style.display = 'none';
-    }, 3000);
-}
-
-function escapeHtml(text) {
-    const map = {
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#039;'
-    };
-    return String(text).replace(/[&<>"']/g, m => map[m]);
-}
-
-// ==================== SPICE Console Functions ====================
-
-async function openVNCConsole(vmId, vmName) {
-    // This function now uses SPICE instead of VNC for better clipboard and mouse support
-    try {
-        showToast('Iniciando consola SPICE...', 'info');
-
-        const spiceInfo = await apiRequest(`/vms/${vmId}/spice`);
-
-        if (spiceInfo.status !== 'ready') {
-            throw new Error('SPICE no disponible. Asegúrate de que la VM esté iniciada.');
-        }
-
-        const wsHost = window.location.hostname || 'localhost';
-        // Use spice_auto.html which auto-connects
-        // path=websockify tells it to connect to the websockify endpoint
-        // vm_id is needed for auto-reconnection to refresh the proxy
-        const spiceUrl = `http://${wsHost}:${spiceInfo.ws_port}/spice_auto.html?host=${wsHost}&port=${spiceInfo.ws_port}&path=websockify&title=${encodeURIComponent(vmName)}&vm_id=${vmId}`;
-        vncFramePanel.src = spiceUrl;
-        vncVmNamePanel.textContent = vmName;
-
-        rightPanel.classList.add('active');
-        leftPanel.classList.add('compressed');
-
-        showToast('Consola SPICE iniciada', 'success');
-    } catch (error) {
-        showToast('Error al abrir consola SPICE: ' + error.message, 'error');
-        console.error('Error al abrir consola SPICE:', error);
-    }
-}
-
-function closeVNCPanel() {
-    rightPanel.classList.remove('active');
-    leftPanel.classList.remove('compressed');
-    vncFramePanel.src = '';
-}
-
-function toggleFullscreen() {
-    const iframe = vncFramePanel;
-
-    if (!document.fullscreenElement) {
-        // Enter fullscreen
-        if (iframe.requestFullscreen) {
-            iframe.requestFullscreen();
-        } else if (iframe.webkitRequestFullscreen) {
-            iframe.webkitRequestFullscreen();
-        } else if (iframe.mozRequestFullScreen) {
-            iframe.mozRequestFullScreen();
-        } else if (iframe.msRequestFullscreen) {
-            iframe.msRequestFullscreen();
-        }
-    } else {
-        // Exit fullscreen
-        if (document.exitFullscreen) {
-            document.exitFullscreen();
-        } else if (document.webkitExitFullscreen) {
-            document.webkitExitFullscreen();
-        } else if (document.mozCancelFullScreen) {
-            document.mozCancelFullScreen();
-        } else if (document.msExitFullscreen) {
-            document.msExitFullscreen();
-        }
-    }
-}
-
-// Listen for fullscreen changes and notify iframe to resize
-document.addEventListener('fullscreenchange', () => {
-    setTimeout(() => {
-        if (vncFramePanel.contentWindow) {
-            vncFramePanel.contentWindow.postMessage({ action: 'resize' }, '*');
-        }
-    }, 100);
-});
-
-// Check if spice-guest-tools is available
-async function checkSpiceTools() {
-    try {
-        const status = await apiRequest('/spice-tools');
-        return status;
-    } catch (error) {
-        console.error('Error checking spice-tools:', error);
-        return { available: false };
-    }
-}
-
-// Show spice-guest-tools installation info
-function showSpiceToolsInfo() {
-    const message = `Para habilitar copiar/pegar y mejor rendimiento:
-
-1. Dentro de la VM, abre el segundo CD-ROM (SPICE-TOOLS)
-2. Ejecuta spice-guest-tools.exe
-3. Reinicia la VM
-
-Una vez instalado:
-- Copiar/pegar bidireccional funcionará
-- Las ventanas se pueden arrastrar correctamente
-- La pantalla se redimensiona automáticamente`;
-
-    alert(message);
-}
-
-// ==================== Logs Functions ====================
-
-async function showVMLogs(vmId, vmName) {
-    currentLogsVmId = vmId;
-    logsVmName.textContent = vmName;
-    logsModal.style.display = 'block';
-    await loadVMLogs(vmId);
-}
-
-async function loadVMLogs(vmId) {
-    try {
-        qemuLog.textContent = 'Cargando...';
-        serialLog.textContent = 'Cargando...';
-
-        const logs = await apiRequest(`/vms/${vmId}/logs`);
-
-        qemuLog.textContent = logs.qemu_log || 'No hay logs disponibles';
-        serialLog.textContent = logs.serial_log || 'No hay logs disponibles';
-    } catch (error) {
-        qemuLog.textContent = `Error al cargar logs: ${error.message}`;
-        serialLog.textContent = `Error al cargar logs: ${error.message}`;
-        showToast('Error al cargar logs: ' + error.message, 'error');
-    }
-}
-
-function closeLogsModal() {
-    logsModal.style.display = 'none';
-    currentLogsVmId = null;
-}
-
-// ==================== Macvtap Help Functions ====================
-
-function toggleMacvtapHelp(id) {
-    const helpContent = document.getElementById(`${id}MacvtapHelp`);
-    const helpToggle = helpContent.previousElementSibling.querySelector('.help-toggle');
-
-    if (helpContent.style.display === 'none') {
-        helpContent.style.display = 'block';
-        helpToggle.textContent = '▼';
-    } else {
-        helpContent.style.display = 'none';
-        helpToggle.textContent = '▶';
-    }
-}
-
-function copyMacvtapCommand(id) {
-    const cmdElement = document.getElementById(`${id}MacvtapCmd`);
-    const command = cmdElement.textContent;
-
-    navigator.clipboard.writeText(command).then(() => {
-        showToast('Comando copiado al portapapeles', 'success');
-    }).catch(err => {
-        // Fallback for older browsers
-        const textarea = document.createElement('textarea');
-        textarea.value = command;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        showToast('Comando copiado al portapapeles', 'success');
-    });
 }

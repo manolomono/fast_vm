@@ -3,390 +3,292 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fast VM - QEMU VM Manager</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <title>Fast VM - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 300: '#a5b4fc',
+                            400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca',
+                            800: '#3730a3', 900: '#312e81',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: #1e293b; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    </style>
 </head>
-<body>
-    <div class="main-layout">
-        <div class="left-panel" id="leftPanel">
-            <div class="container">
-                <header>
-                    <h1>Fast VM</h1>
-                    <p class="subtitle">QEMU Virtual Machine Manager</p>
-                </header>
+<body class="bg-slate-900 text-white" x-data="dashboard()" x-init="init()" x-cloak>
 
-                <div class="actions">
-                    <button id="createVmBtn" class="btn btn-primary">+ Nueva VM</button>
-                    <button id="volumesBtn" class="btn btn-secondary">💾 Volúmenes</button>
-                    <button id="refreshBtn" class="btn btn-secondary">🔄 Actualizar</button>
-                </div>
-
-                <div id="vmsList" class="vms-list">
-                    <div class="loading">Cargando máquinas virtuales...</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="right-panel" id="rightPanel">
-            <div class="vnc-panel-header">
-                <div class="vnc-panel-title">
-                    <h2>Consola SPICE - <span id="vncVmNamePanel"></span></h2>
-                </div>
-                <div class="vnc-panel-actions">
-                    <button id="fullscreenBtn" class="btn btn-primary" title="Pantalla completa">⛶ Fullscreen</button>
-                    <button id="closePanelBtn" class="btn btn-secondary">✕ Cerrar</button>
-                </div>
-            </div>
-            <div class="vnc-panel-content">
-                <iframe id="vncFramePanel" src="" frameborder="0" allowfullscreen allow="fullscreen; clipboard-read; clipboard-write"></iframe>
-            </div>
+    <!-- Auth Check Loading -->
+    <div x-show="!ready" class="fixed inset-0 bg-slate-900 flex items-center justify-center z-50">
+        <div class="text-center">
+            <svg class="animate-spin h-12 w-12 text-primary-500 mx-auto mb-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            <p class="text-slate-400">Cargando...</p>
         </div>
     </div>
 
-    <!-- Modal for creating VM -->
-    <div id="createVmModal" class="modal">
-        <div class="modal-content modal-large">
-            <span class="close">&times;</span>
-            <h2>Crear Nueva Máquina Virtual</h2>
-            <form id="createVmForm">
-                <!-- Basic Settings -->
-                <div class="form-section">
-                    <h3 class="section-title">Configuración Básica</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="vmName">Nombre:</label>
-                            <input type="text" id="vmName" name="name" required minlength="1" maxlength="50">
-                        </div>
-                        <div class="form-group">
-                            <label for="vmMemory">Memoria (MB):</label>
-                            <input type="number" id="vmMemory" name="memory" value="2048" min="512" max="32768" step="256">
-                        </div>
+    <!-- Main Layout -->
+    <div x-show="ready" class="flex h-screen overflow-hidden">
+
+        <!-- Sidebar -->
+        <aside class="w-64 bg-slate-800 border-r border-slate-700 flex flex-col flex-shrink-0">
+            <!-- Logo -->
+            <div class="p-4 border-b border-slate-700">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path>
+                        </svg>
                     </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="vmCpus">CPUs:</label>
-                            <input type="number" id="vmCpus" name="cpus" value="2" min="1" max="16">
-                        </div>
-                        <div class="form-group">
-                            <label for="vmDiskSize">Tamaño de Disco (GB):</label>
-                            <input type="number" id="vmDiskSize" name="disk_size" value="20" min="5" max="500">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="vmIsoPath">ISO de Instalación:</label>
-                            <select id="vmIsoPath" name="iso_path">
-                                <option value="">Sin ISO</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="vmSecondaryIso">ISO Secundaria (Drivers):</label>
-                            <select id="vmSecondaryIso" name="secondary_iso_path">
-                                <option value="">Sin ISO</option>
-                            </select>
-                        </div>
+                    <div>
+                        <h1 class="text-lg font-bold text-white">Fast VM</h1>
+                        <p class="text-xs text-slate-400">VM Manager</p>
                     </div>
                 </div>
+            </div>
 
-                <!-- Network Settings -->
-                <div class="form-section">
-                    <h3 class="section-title collapsible" onclick="toggleSection('networkSection')">
-                        <span class="collapse-icon">▼</span> Configuración de Red
-                    </h3>
-                    <div id="networkSection" class="section-content">
-                        <div id="networkInterfaces">
-                            <!-- Network interfaces will be added here dynamically -->
-                        </div>
-                        <button type="button" class="btn btn-secondary btn-small" onclick="addNetworkInterface()">+ Añadir Interface</button>
-                    </div>
+            <!-- Navigation -->
+            <nav class="p-3 space-y-1">
+                <button @click="currentView = 'dashboard'" :class="currentView === 'dashboard' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700/50'" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+                    <span>Dashboard</span>
+                </button>
+                <button @click="currentView = 'volumes'" :class="currentView === 'volumes' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700/50'" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
+                    <span>Volumes</span>
+                </button>
+            </nav>
+
+            <!-- VM List -->
+            <div class="flex-1 overflow-hidden flex flex-col border-t border-slate-700 mt-2">
+                <div class="px-4 py-3 flex items-center justify-between">
+                    <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">VMs</span>
+                    <button @click="showCreateModal = true" class="text-primary-400 hover:text-primary-300">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                    </button>
                 </div>
+                <div class="flex-1 overflow-y-auto scrollbar-thin px-2 pb-2 space-y-1">
+                    <template x-for="vm in vms" :key="vm.id">
+                        <button @click="selectVm(vm)" :class="selectedVm?.id === vm.id ? 'bg-slate-700' : 'hover:bg-slate-700/50'" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors text-left">
+                            <span :class="vm.status === 'running' ? 'bg-emerald-500' : 'bg-slate-500'" class="w-2 h-2 rounded-full flex-shrink-0"></span>
+                            <span class="truncate text-sm" x-text="vm.name"></span>
+                        </button>
+                    </template>
+                    <p x-show="vms.length === 0" class="text-slate-500 text-sm text-center py-4">No hay VMs</p>
+                </div>
+            </div>
 
-                <!-- Hardware Options -->
-                <div class="form-section">
-                    <h3 class="section-title collapsible" onclick="toggleSection('hardwareSection')">
-                        <span class="collapse-icon">▼</span> Opciones de Hardware
-                    </h3>
-                    <div id="hardwareSection" class="section-content">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="vmCpuModel">Modelo de CPU:</label>
-                                <select id="vmCpuModel" name="cpu_model">
-                                    <option value="host">host (Mejor rendimiento)</option>
-                                    <option value="qemu64">qemu64 (Máxima compatibilidad)</option>
-                                    <option value="max">max (Todas las features)</option>
-                                    <option value="Skylake-Client">Skylake-Client</option>
-                                    <option value="EPYC">EPYC</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="vmDisplayType">Tipo de Display:</label>
-                                <select id="vmDisplayType" name="display_type">
-                                    <option value="std">VGA Estándar</option>
-                                    <option value="virtio">Virtio (Mejor rendimiento)</option>
-                                    <option value="qxl">QXL (Optimizado SPICE)</option>
-                                    <option value="cirrus">Cirrus (Legacy)</option>
-                                </select>
-                            </div>
+            <!-- User Section -->
+            <div class="p-3 border-t border-slate-700">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <div class="w-8 h-8 bg-slate-600 rounded-full flex items-center justify-center">
+                            <svg class="w-4 h-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
                         </div>
-                        <div class="form-group">
-                            <label>Orden de Arranque:</label>
-                            <div class="boot-order-container" id="bootOrderContainer">
-                                <div class="boot-order-item" data-device="disk">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="bootDisk" checked>
-                                    <label for="bootDisk">Disco</label>
+                        <span class="text-sm text-slate-300" x-text="user?.username || 'Usuario'"></span>
+                    </div>
+                    <button @click="logout()" class="text-slate-400 hover:text-red-400 transition-colors" title="Cerrar sesión">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 flex flex-col overflow-hidden">
+            <!-- Header -->
+            <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between flex-shrink-0">
+                <div>
+                    <h2 class="text-xl font-semibold" x-text="currentView === 'dashboard' ? 'Dashboard' : currentView === 'volumes' ? 'Volumes' : 'Fast VM'"></h2>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <button @click="loadVMs()" class="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors" title="Actualizar">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </button>
+                    <button @click="showCreateModal = true" class="flex items-center space-x-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                        <span>Nueva VM</span>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Content Area -->
+            <div class="flex-1 overflow-hidden flex">
+                <!-- Dashboard/Volumes View -->
+                <div class="flex-1 overflow-y-auto p-6" :class="showConsole ? 'w-1/2' : 'w-full'">
+                    <!-- Stats Cards -->
+                    <div x-show="currentView === 'dashboard'" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-slate-400 text-sm">Total VMs</p>
+                                    <p class="text-2xl font-bold" x-text="vms.length"></p>
                                 </div>
-                                <div class="boot-order-item" data-device="cdrom">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="bootCdrom" checked>
-                                    <label for="bootCdrom">CD-ROM</label>
-                                </div>
-                                <div class="boot-order-item" data-device="network">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="bootNetwork">
-                                    <label for="bootNetwork">Red (PXE)</label>
+                                <div class="w-12 h-12 bg-primary-600/20 rounded-lg flex items-center justify-center">
+                                    <svg class="w-6 h-6 text-primary-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
                                 </div>
                             </div>
-                            <small class="help-text">Arrastra para cambiar el orden. Marca las opciones activas.</small>
                         </div>
-                    </div>
-                </div>
-
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">Crear VM</button>
-                    <button type="button" class="btn btn-secondary" id="cancelCreateBtn">Cancelar</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Edit VM Modal -->
-    <div id="editVmModal" class="modal">
-        <div class="modal-content modal-large">
-            <span class="close" id="editVmClose">&times;</span>
-            <h2>Editar Máquina Virtual - <span id="editVmNameDisplay"></span></h2>
-            <form id="editVmForm">
-                <!-- Basic Settings -->
-                <div class="form-section">
-                    <h3 class="section-title">Configuración Básica</h3>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="editVmMemory">Memoria (MB):</label>
-                            <input type="number" id="editVmMemory" name="memory" min="512" max="32768" step="256">
-                        </div>
-                        <div class="form-group">
-                            <label for="editVmCpus">CPUs:</label>
-                            <input type="number" id="editVmCpus" name="cpus" min="1" max="16">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="editVmIso">ISO de Instalación:</label>
-                            <select id="editVmIso" name="iso_path">
-                                <option value="">Sin ISO</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="editVmSecondaryIso">ISO Secundaria (Drivers):</label>
-                            <select id="editVmSecondaryIso" name="secondary_iso_path">
-                                <option value="">Sin ISO</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Network Settings -->
-                <div class="form-section">
-                    <h3 class="section-title collapsible" onclick="toggleSection('editNetworkSection')">
-                        <span class="collapse-icon">▼</span> Configuración de Red
-                    </h3>
-                    <div id="editNetworkSection" class="section-content">
-                        <div id="editNetworkInterfaces">
-                            <!-- Network interfaces will be added here dynamically -->
-                        </div>
-                        <button type="button" class="btn btn-secondary btn-small" onclick="addNetworkInterface('edit')">+ Añadir Interface</button>
-                    </div>
-                </div>
-
-                <!-- Hardware Options -->
-                <div class="form-section">
-                    <h3 class="section-title collapsible" onclick="toggleSection('editHardwareSection')">
-                        <span class="collapse-icon">▼</span> Opciones de Hardware
-                    </h3>
-                    <div id="editHardwareSection" class="section-content">
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label for="editVmCpuModel">Modelo de CPU:</label>
-                                <select id="editVmCpuModel" name="cpu_model">
-                                    <option value="host">host (Mejor rendimiento)</option>
-                                    <option value="qemu64">qemu64 (Máxima compatibilidad)</option>
-                                    <option value="max">max (Todas las features)</option>
-                                    <option value="Skylake-Client">Skylake-Client</option>
-                                    <option value="EPYC">EPYC</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="editVmDisplayType">Tipo de Display:</label>
-                                <select id="editVmDisplayType" name="display_type">
-                                    <option value="std">VGA Estándar</option>
-                                    <option value="virtio">Virtio (Mejor rendimiento)</option>
-                                    <option value="qxl">QXL (Optimizado SPICE)</option>
-                                    <option value="cirrus">Cirrus (Legacy)</option>
-                                </select>
+                        <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-slate-400 text-sm">Running</p>
+                                    <p class="text-2xl font-bold text-emerald-400" x-text="runningVMs"></p>
+                                </div>
+                                <div class="w-12 h-12 bg-emerald-600/20 rounded-lg flex items-center justify-center">
+                                    <svg class="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                </div>
                             </div>
                         </div>
-                        <div class="form-group">
-                            <label>Orden de Arranque:</label>
-                            <div class="boot-order-container" id="editBootOrderContainer">
-                                <div class="boot-order-item" data-device="disk">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="editBootDisk" checked>
-                                    <label for="editBootDisk">Disco</label>
+                        <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-slate-400 text-sm">Stopped</p>
+                                    <p class="text-2xl font-bold text-slate-400" x-text="stoppedVMs"></p>
                                 </div>
-                                <div class="boot-order-item" data-device="cdrom">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="editBootCdrom" checked>
-                                    <label for="editBootCdrom">CD-ROM</label>
+                                <div class="w-12 h-12 bg-slate-600/20 rounded-lg flex items-center justify-center">
+                                    <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path></svg>
                                 </div>
-                                <div class="boot-order-item" data-device="network">
-                                    <span class="drag-handle">☰</span>
-                                    <input type="checkbox" id="editBootNetwork">
-                                    <label for="editBootNetwork">Red (PXE)</label>
+                            </div>
+                        </div>
+                        <div class="bg-slate-800 rounded-xl p-4 border border-slate-700">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <p class="text-slate-400 text-sm">Volumes</p>
+                                    <p class="text-2xl font-bold" x-text="volumes.length"></p>
+                                </div>
+                                <div class="w-12 h-12 bg-amber-600/20 rounded-lg flex items-center justify-center">
+                                    <svg class="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Attached Volumes -->
-                <div class="form-section">
-                    <h3 class="section-title collapsible" onclick="toggleSection('editVolumesSection')">
-                        <span class="collapse-icon">▼</span> Volúmenes Adjuntos
-                    </h3>
-                    <div id="editVolumesSection" class="section-content">
-                        <div id="attachedVolumes" class="volumes-list">
-                            <!-- Attached volumes will be listed here -->
+                    <!-- VM Cards Grid -->
+                    <div x-show="currentView === 'dashboard'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        <template x-for="vm in vms" :key="vm.id">
+                            <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden hover:border-slate-600 transition-colors">
+                                <div class="p-4">
+                                    <div class="flex items-start justify-between mb-3">
+                                        <div class="flex items-center space-x-3">
+                                            <div :class="vm.status === 'running' ? 'bg-emerald-600/20' : 'bg-slate-600/20'" class="w-10 h-10 rounded-lg flex items-center justify-center">
+                                                <svg :class="vm.status === 'running' ? 'text-emerald-400' : 'text-slate-400'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                                            </div>
+                                            <div>
+                                                <h3 class="font-semibold" x-text="vm.name"></h3>
+                                                <span :class="vm.status === 'running' ? 'text-emerald-400' : 'text-slate-400'" class="text-xs" x-text="vm.status"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-3 gap-2 text-sm mb-4">
+                                        <div class="bg-slate-700/50 rounded-lg p-2 text-center">
+                                            <p class="text-slate-400 text-xs">CPU</p>
+                                            <p class="font-medium" x-text="vm.cpus"></p>
+                                        </div>
+                                        <div class="bg-slate-700/50 rounded-lg p-2 text-center">
+                                            <p class="text-slate-400 text-xs">RAM</p>
+                                            <p class="font-medium" x-text="(vm.memory / 1024).toFixed(1) + 'G'"></p>
+                                        </div>
+                                        <div class="bg-slate-700/50 rounded-lg p-2 text-center">
+                                            <p class="text-slate-400 text-xs">Disk</p>
+                                            <p class="font-medium" x-text="vm.disk_size + 'G'"></p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center space-x-2">
+                                        <template x-if="vm.status !== 'running'">
+                                            <button @click="startVM(vm.id)" class="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm font-medium transition-colors">Start</button>
+                                        </template>
+                                        <template x-if="vm.status === 'running'">
+                                            <button @click="stopVM(vm.id)" class="flex-1 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors">Stop</button>
+                                        </template>
+                                        <template x-if="vm.status === 'running'">
+                                            <button @click="openConsole(vm)" class="flex-1 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg text-sm font-medium transition-colors">Console</button>
+                                        </template>
+                                        <button @click="editVm(vm)" class="p-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors" title="Editar">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                        </button>
+                                        <button @click="confirmDelete(vm)" class="p-2 bg-slate-700 hover:bg-red-600 rounded-lg transition-colors" title="Eliminar">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                        <p x-show="vms.length === 0" class="text-slate-500 col-span-full text-center py-12">No hay máquinas virtuales. Crea una nueva para comenzar.</p>
+                    </div>
+
+                    <!-- Volumes View -->
+                    <div x-show="currentView === 'volumes'">
+                        <div class="flex justify-end mb-4">
+                            <button @click="showVolumeModal = true" class="flex items-center space-x-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                <span>Nuevo Volumen</span>
+                            </button>
                         </div>
-                        <div class="form-row">
-                            <select id="availableVolumes" class="flex-grow">
-                                <option value="">Seleccionar volumen...</option>
-                            </select>
-                            <button type="button" class="btn btn-secondary btn-small" onclick="attachVolumeToVm()">+ Adjuntar</button>
+                        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                            <template x-for="vol in volumes" :key="vol.id">
+                                <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center space-x-3">
+                                            <div class="w-10 h-10 bg-amber-600/20 rounded-lg flex items-center justify-center">
+                                                <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
+                                            </div>
+                                            <div>
+                                                <h3 class="font-semibold" x-text="vol.name"></h3>
+                                                <span class="text-xs text-slate-400" x-text="vol.size_gb + 'GB - ' + vol.format"></span>
+                                            </div>
+                                        </div>
+                                        <button @click="deleteVolume(vol)" class="p-2 text-slate-400 hover:text-red-400 hover:bg-red-600/20 rounded-lg transition-colors">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                        </button>
+                                    </div>
+                                    <p x-show="vol.attached_to" class="text-xs text-primary-400">Attached to VM</p>
+                                    <p x-show="!vol.attached_to" class="text-xs text-slate-500">Not attached</p>
+                                </div>
+                            </template>
+                            <p x-show="volumes.length === 0" class="text-slate-500 col-span-full text-center py-12">No hay volúmenes.</p>
                         </div>
                     </div>
                 </div>
 
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">Guardar Cambios</button>
-                    <button type="button" class="btn btn-secondary" id="cancelEditBtn">Cancelar</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Volumes Modal -->
-    <div id="volumesModal" class="modal">
-        <div class="modal-content modal-large">
-            <div class="modal-header">
-                <h2>Gestión de Volúmenes</h2>
-                <span class="close" id="volumesClose">&times;</span>
-            </div>
-            <div class="volumes-toolbar">
-                <button class="btn btn-primary" onclick="showCreateVolumeForm()">+ Crear Volumen</button>
-            </div>
-            <div id="createVolumeForm" class="create-volume-form" style="display: none;">
-                <h3>Crear Nuevo Volumen</h3>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="volName">Nombre:</label>
-                        <input type="text" id="volName" required minlength="1" maxlength="50">
+                <!-- Console Panel -->
+                <div x-show="showConsole" x-transition class="w-1/2 bg-slate-800 border-l border-slate-700 flex flex-col">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+                        <h3 class="font-semibold">Console - <span x-text="consoleVm?.name"></span></h3>
+                        <div class="flex items-center space-x-2">
+                            <button @click="toggleFullscreen()" class="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
+                            </button>
+                            <button @click="closeConsole()" class="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="volSize">Tamaño (GB):</label>
-                        <input type="number" id="volSize" value="10" min="1" max="1000">
-                    </div>
-                    <div class="form-group">
-                        <label for="volFormat">Formato:</label>
-                        <select id="volFormat">
-                            <option value="qcow2">qcow2 (Recomendado)</option>
-                            <option value="raw">raw</option>
-                        </select>
+                    <div class="flex-1 bg-black">
+                        <iframe id="consoleFrame" :src="consoleUrl" class="w-full h-full border-0" allowfullscreen allow="fullscreen; clipboard-read; clipboard-write"></iframe>
                     </div>
                 </div>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-primary" onclick="createVolume()">Crear</button>
-                    <button type="button" class="btn btn-secondary" onclick="hideCreateVolumeForm()">Cancelar</button>
-                </div>
             </div>
-            <div id="volumesList" class="volumes-grid">
-                <div class="loading">Cargando volúmenes...</div>
-            </div>
-        </div>
+        </main>
     </div>
 
-    <!-- Snapshots Modal -->
-    <div id="snapshotsModal" class="modal">
-        <div class="modal-content modal-large">
-            <div class="modal-header">
-                <h2>Snapshots - <span id="snapshotsVmName"></span></h2>
-                <span class="close" id="snapshotsClose">&times;</span>
-            </div>
-            <div class="snapshots-toolbar">
-                <button class="btn btn-primary" onclick="showCreateSnapshotForm()">+ Crear Snapshot</button>
-            </div>
-            <div id="createSnapshotForm" class="create-snapshot-form" style="display: none;">
-                <h3>Crear Nuevo Snapshot</h3>
-                <div class="form-row">
-                    <div class="form-group flex-grow">
-                        <label for="snapName">Nombre:</label>
-                        <input type="text" id="snapName" required minlength="1" maxlength="50">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="snapDescription">Descripción (opcional):</label>
-                    <input type="text" id="snapDescription" maxlength="200">
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="btn btn-primary" onclick="createSnapshot()">Crear</button>
-                    <button type="button" class="btn btn-secondary" onclick="hideCreateSnapshotForm()">Cancelar</button>
-                </div>
-            </div>
-            <div id="snapshotsList" class="snapshots-list">
-                <div class="loading">Cargando snapshots...</div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" id="closeSnapshotsBtn">Cerrar</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Logs Modal -->
-    <div id="logsModal" class="modal">
-        <div class="modal-content logs-modal-content">
-            <div class="modal-header">
-                <h2>Logs de VM - <span id="logsVmName"></span></h2>
-                <span class="close" id="logsClose">&times;</span>
-            </div>
-            <div class="logs-content">
-                <div class="log-section">
-                    <h3>QEMU Log</h3>
-                    <pre id="qemuLog" class="log-output">Cargando...</pre>
-                </div>
-                <div class="log-section">
-                    <h3>Serial Console Log</h3>
-                    <pre id="serialLog" class="log-output">Cargando...</pre>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button id="refreshLogsBtn" class="btn btn-secondary">🔄 Actualizar</button>
-                <button id="closeLogsBtn" class="btn btn-secondary">Cerrar</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Toast notification -->
-    <div id="toast" class="toast"></div>
-
+    <!-- Include modals and app.js -->
+    <div id="modals"></div>
     <script src="/static/app.js"></script>
 </body>
 </html>

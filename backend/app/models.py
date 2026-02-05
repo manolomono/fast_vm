@@ -5,6 +5,31 @@ from datetime import datetime
 import uuid
 
 
+# ==================== Auth Models ====================
+
+class User(BaseModel):
+    username: str
+    hashed_password: str
+    is_admin: bool = True
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserInfo(BaseModel):
+    username: str
+    is_admin: bool
+
+
+# ==================== VM Models ====================
+
 class VMStatus(str, Enum):
     RUNNING = "running"
     STOPPED = "stopped"

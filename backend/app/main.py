@@ -1,17 +1,23 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from typing import List
 import os
 
 from .models import (
     VMCreate, VMInfo, VMResponse, VNCConnectionInfo, SpiceConnectionInfo, VMUpdate,
     Volume, VolumeCreate, VolumeResponse,
-    Snapshot, SnapshotCreate, SnapshotResponse
+    Snapshot, SnapshotCreate, SnapshotResponse,
+    LoginRequest, Token, UserInfo
 )
 from .vm_manager import VMManager
+from .auth import (
+    authenticate_user, create_access_token, get_current_user,
+    create_default_user, UserInfo as AuthUserInfo
+)
 import asyncio
+from datetime import timedelta
 
 app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0")
 
@@ -52,6 +58,44 @@ async def root():
     return {"message": "Fast VM API is running"}
 
 
+@app.get("/login.html")
+async def login_page():
+    """Serve login page"""
+    login_path = os.path.join(frontend_path, "login.html")
+    if os.path.exists(login_path):
+        return FileResponse(login_path)
+    return {"message": "Login page not found"}
+
+
+# ==================== Auth Endpoints ====================
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(login_data: LoginRequest):
+    """Authenticate user and return JWT token"""
+    user = authenticate_user(login_data.username, login_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
+    access_token = create_access_token(
+        data={"sub": user.username, "is_admin": user.is_admin}
+    )
+    return Token(access_token=access_token)
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    """Logout endpoint (client should discard token)"""
+    return {"success": True, "message": "Logged out successfully"}
+
+
+@app.get("/api/auth/me", response_model=UserInfo)
+async def get_me(current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get current authenticated user info"""
+    return UserInfo(username=current_user.username, is_admin=current_user.is_admin)
+
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
@@ -61,7 +105,7 @@ async def health_check():
 # ==================== VM Endpoints ====================
 
 @app.get("/api/vms", response_model=List[VMInfo])
-async def list_vms():
+async def list_vms(current_user: AuthUserInfo = Depends(get_current_user)):
     """List all VMs"""
     try:
         return vm_manager.list_vms()
@@ -70,7 +114,7 @@ async def list_vms():
 
 
 @app.get("/api/vms/{vm_id}", response_model=VMInfo)
-async def get_vm(vm_id: str):
+async def get_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Get VM details"""
     vm = vm_manager.get_vm(vm_id)
     if not vm:
@@ -79,7 +123,7 @@ async def get_vm(vm_id: str):
 
 
 @app.post("/api/vms", response_model=VMResponse)
-async def create_vm(vm_data: VMCreate):
+async def create_vm(vm_data: VMCreate, current_user: AuthUserInfo = Depends(get_current_user)):
     """Create a new VM"""
     try:
         vm = vm_manager.create_vm(vm_data)
@@ -93,7 +137,7 @@ async def create_vm(vm_data: VMCreate):
 
 
 @app.post("/api/vms/{vm_id}/start", response_model=VMResponse)
-async def start_vm(vm_id: str):
+async def start_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Start a VM"""
     try:
         vm = vm_manager.start_vm(vm_id)
@@ -109,7 +153,7 @@ async def start_vm(vm_id: str):
 
 
 @app.post("/api/vms/{vm_id}/stop", response_model=VMResponse)
-async def stop_vm(vm_id: str):
+async def stop_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Stop a VM"""
     try:
         vm = vm_manager.stop_vm(vm_id)
@@ -125,7 +169,7 @@ async def stop_vm(vm_id: str):
 
 
 @app.post("/api/vms/{vm_id}/restart", response_model=VMResponse)
-async def restart_vm(vm_id: str):
+async def restart_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Restart a VM"""
     try:
         vm = vm_manager.restart_vm(vm_id)
@@ -141,7 +185,7 @@ async def restart_vm(vm_id: str):
 
 
 @app.delete("/api/vms/{vm_id}", response_model=VMResponse)
-async def delete_vm(vm_id: str):
+async def delete_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Delete a VM"""
     try:
         vm = vm_manager.get_vm(vm_id)
@@ -158,7 +202,7 @@ async def delete_vm(vm_id: str):
 
 
 @app.get("/api/vms/{vm_id}/vnc", response_model=VNCConnectionInfo)
-async def get_vnc_info(vm_id: str):
+async def get_vnc_info(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Get VNC connection info, starting proxy if needed"""
     try:
         vnc_info = vm_manager.get_vnc_connection(vm_id)
@@ -170,7 +214,7 @@ async def get_vnc_info(vm_id: str):
 
 
 @app.post("/api/vms/{vm_id}/vnc/disconnect", response_model=VMResponse)
-async def disconnect_vnc(vm_id: str):
+async def disconnect_vnc(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Disconnect VNC proxy for a VM"""
     try:
         vm_manager.vnc_proxy_manager.stop_proxy(vm_id)
@@ -192,7 +236,7 @@ async def disconnect_vnc(vm_id: str):
 # ==================== SPICE Endpoints ====================
 
 @app.get("/api/vms/{vm_id}/spice", response_model=SpiceConnectionInfo)
-async def get_spice_info(vm_id: str):
+async def get_spice_info(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Get SPICE connection info, starting proxy if needed"""
     try:
         spice_info = vm_manager.get_spice_connection(vm_id)
@@ -204,7 +248,7 @@ async def get_spice_info(vm_id: str):
 
 
 @app.post("/api/vms/{vm_id}/spice/disconnect", response_model=VMResponse)
-async def disconnect_spice(vm_id: str):
+async def disconnect_spice(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Disconnect SPICE proxy for a VM"""
     try:
         vm_manager.spice_proxy_manager.stop_proxy(vm_id)
@@ -224,7 +268,7 @@ async def disconnect_spice(vm_id: str):
 
 
 @app.get("/api/spice-tools")
-async def get_spice_tools_status():
+async def get_spice_tools_status(current_user: AuthUserInfo = Depends(get_current_user)):
     """Check if spice-guest-tools ISO is available"""
     try:
         return vm_manager.get_spice_tools_status()
@@ -233,7 +277,7 @@ async def get_spice_tools_status():
 
 
 @app.get("/api/vms/{vm_id}/logs")
-async def get_vm_logs(vm_id: str):
+async def get_vm_logs(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Get logs for a VM"""
     try:
         logs = vm_manager.get_vm_logs(vm_id)
@@ -245,7 +289,7 @@ async def get_vm_logs(vm_id: str):
 
 
 @app.get("/api/isos")
-async def list_isos():
+async def list_isos(current_user: AuthUserInfo = Depends(get_current_user)):
     """List available ISO files"""
     try:
         isos = vm_manager.get_available_isos()
@@ -255,7 +299,7 @@ async def list_isos():
 
 
 @app.get("/api/bridges")
-async def list_bridges():
+async def list_bridges(current_user: AuthUserInfo = Depends(get_current_user)):
     """List available network bridges on the system"""
     try:
         bridges = vm_manager.get_available_bridges()
@@ -265,7 +309,7 @@ async def list_bridges():
 
 
 @app.get("/api/interfaces")
-async def list_interfaces():
+async def list_interfaces(current_user: AuthUserInfo = Depends(get_current_user)):
     """List available physical network interfaces for macvtap"""
     try:
         interfaces = vm_manager.get_available_interfaces()
@@ -275,14 +319,14 @@ async def list_interfaces():
 
 
 @app.get("/api/system/user")
-async def get_current_user():
+async def get_system_user(current_user: AuthUserInfo = Depends(get_current_user)):
     """Get the current system user running the backend"""
     import getpass
     return {"username": getpass.getuser()}
 
 
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
-async def update_vm(vm_id: str, updates: VMUpdate):
+async def update_vm(vm_id: str, updates: VMUpdate, current_user: AuthUserInfo = Depends(get_current_user)):
     """Update VM configuration"""
     try:
         vm = vm_manager.update_vm(vm_id, updates.model_dump(exclude_unset=True))
@@ -300,7 +344,7 @@ async def update_vm(vm_id: str, updates: VMUpdate):
 # ==================== Volume Endpoints ====================
 
 @app.get("/api/volumes", response_model=List[Volume])
-async def list_volumes():
+async def list_volumes(current_user: AuthUserInfo = Depends(get_current_user)):
     """List all volumes"""
     try:
         return vm_manager.list_volumes()
@@ -309,7 +353,7 @@ async def list_volumes():
 
 
 @app.get("/api/volumes/{vol_id}", response_model=Volume)
-async def get_volume(vol_id: str):
+async def get_volume(vol_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Get volume details"""
     vol = vm_manager.get_volume(vol_id)
     if not vol:
@@ -318,7 +362,7 @@ async def get_volume(vol_id: str):
 
 
 @app.post("/api/volumes", response_model=VolumeResponse)
-async def create_volume(vol_data: VolumeCreate):
+async def create_volume(vol_data: VolumeCreate, current_user: AuthUserInfo = Depends(get_current_user)):
     """Create a new volume"""
     try:
         vol = vm_manager.create_volume(vol_data)
@@ -332,7 +376,7 @@ async def create_volume(vol_data: VolumeCreate):
 
 
 @app.delete("/api/volumes/{vol_id}", response_model=VolumeResponse)
-async def delete_volume(vol_id: str):
+async def delete_volume(vol_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Delete a volume"""
     try:
         vol = vm_manager.get_volume(vol_id)
@@ -349,7 +393,7 @@ async def delete_volume(vol_id: str):
 
 
 @app.post("/api/vms/{vm_id}/volumes/{vol_id}", response_model=VMResponse)
-async def attach_volume(vm_id: str, vol_id: str):
+async def attach_volume(vm_id: str, vol_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Attach a volume to a VM"""
     try:
         vm = vm_manager.attach_volume(vm_id, vol_id)
@@ -365,7 +409,7 @@ async def attach_volume(vm_id: str, vol_id: str):
 
 
 @app.delete("/api/vms/{vm_id}/volumes/{vol_id}", response_model=VMResponse)
-async def detach_volume(vm_id: str, vol_id: str):
+async def detach_volume(vm_id: str, vol_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Detach a volume from a VM"""
     try:
         vm = vm_manager.detach_volume(vm_id, vol_id)
@@ -383,7 +427,7 @@ async def detach_volume(vm_id: str, vol_id: str):
 # ==================== Snapshot Endpoints ====================
 
 @app.get("/api/vms/{vm_id}/snapshots", response_model=List[Snapshot])
-async def list_snapshots(vm_id: str):
+async def list_snapshots(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """List snapshots for a VM"""
     try:
         return vm_manager.list_snapshots(vm_id)
@@ -394,7 +438,7 @@ async def list_snapshots(vm_id: str):
 
 
 @app.post("/api/vms/{vm_id}/snapshots", response_model=SnapshotResponse)
-async def create_snapshot(vm_id: str, snap_data: SnapshotCreate):
+async def create_snapshot(vm_id: str, snap_data: SnapshotCreate, current_user: AuthUserInfo = Depends(get_current_user)):
     """Create a snapshot of a VM"""
     try:
         snap = vm_manager.create_snapshot(vm_id, snap_data)
@@ -410,7 +454,7 @@ async def create_snapshot(vm_id: str, snap_data: SnapshotCreate):
 
 
 @app.post("/api/vms/{vm_id}/snapshots/{snap_id}/restore", response_model=VMResponse)
-async def restore_snapshot(vm_id: str, snap_id: str):
+async def restore_snapshot(vm_id: str, snap_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Restore a VM to a snapshot"""
     try:
         vm = vm_manager.restore_snapshot(vm_id, snap_id)
@@ -426,7 +470,7 @@ async def restore_snapshot(vm_id: str, snap_id: str):
 
 
 @app.delete("/api/vms/{vm_id}/snapshots/{snap_id}", response_model=SnapshotResponse)
-async def delete_snapshot(vm_id: str, snap_id: str):
+async def delete_snapshot(vm_id: str, snap_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Delete a snapshot"""
     try:
         vm_manager.delete_snapshot(vm_id, snap_id)

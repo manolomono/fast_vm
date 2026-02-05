@@ -101,14 +101,19 @@
             }
 
             function refreshProxyAndConnect() {
-                // Extract VM ID from query params
+                // Extract VM ID and token from query params
                 var vmId = spice_query_var('vm_id', null);
+                var token = spice_query_var('token', null);
 
                 if (vmId) {
                     console.log("Refreshing proxy for VM:", vmId);
                     // Use the main app's API endpoint
                     var apiUrl = window.location.protocol + '//' + window.location.hostname + ':8000/api/vms/' + vmId + '/spice';
-                    fetch(apiUrl)
+                    var fetchOptions = {};
+                    if (token) {
+                        fetchOptions.headers = { 'Authorization': 'Bearer ' + token };
+                    }
+                    fetch(apiUrl, fetchOptions)
                         .then(function(response) {
                             if (response.ok) {
                                 return response.json();
