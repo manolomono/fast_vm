@@ -1,30 +1,95 @@
 # Fast VM
 
-Sistema web para administrar máquinas virtuales con QEMU/KVM.
+Sistema web para administrar maquinas virtuales con QEMU/KVM. Incluye un dashboard moderno con autenticacion, consola SPICE integrada en el navegador y gestion completa de VMs, volumenes y snapshots.
 
-## Características
+## Capturas
 
-- **Interfaz Web Moderna**: UI limpia y responsive para gestionar VMs
-- **SPICE Display**: Acceso remoto de alta calidad con soporte para clipboard y resize
-- **API REST**: Backend completo con FastAPI
-- **Gestión de VMs**: Crear, iniciar, detener, reiniciar y eliminar máquinas virtuales
-- **QEMU/KVM**: Virtualización con aceleración por hardware
-- **Redes Avanzadas**: NAT, Bridge, MacVTAP e Isolated
-- **Volúmenes**: Discos adicionales que se pueden adjuntar/desadjuntar
-- **Snapshots**: Crear y restaurar snapshots de VMs
-- **UEFI + Secure Boot**: Soporte completo para Windows 11
-- **TPM 2.0**: Emulación de TPM con swtpm
+### Dashboard
+El dashboard muestra un resumen en tiempo real con tarjetas de estadisticas (Total VMs, Running, Stopped, Volumes) y una cuadricula de VMs con controles rapidos para iniciar, detener, abrir consola, editar y eliminar.
+
+### Consola SPICE
+Panel dividido que permite ver la consola de la VM directamente en el navegador con soporte fullscreen, clipboard y redimensionado.
+
+## Caracteristicas
+
+### Dashboard Web
+- **UI moderna con dark theme** - Construido con TailwindCSS + Alpine.js
+- **Sidebar con navegacion** - Dashboard, Volumes y listado de VMs con indicador de estado
+- **Tarjetas de estadisticas** - Total VMs, Running, Stopped, Volumes en tiempo real
+- **Cuadricula de VMs** - Cards con info de CPU, RAM, disco y controles rapidos
+- **Auto-refresh** - El dashboard se actualiza automaticamente cada 10 segundos
+- **Notificaciones toast** - Feedback visual de exito/error en cada accion
+- **Responsive** - Adaptable a diferentes tamanos de pantalla
+
+### Autenticacion
+- **Login con JWT** - Pagina de login con tokens Bearer
+- **Passwords con bcrypt** - Hash seguro de contrasenas
+- **Usuario por defecto** - Se crea automaticamente `admin/admin` en el primer inicio
+- **Sesion persistente** - Token almacenado en localStorage (24h de duracion)
+- **Proteccion de API** - Todos los endpoints requieren autenticacion
+
+### Gestion de VMs
+- **Crear VMs** - Modal con configuracion de nombre, CPU, RAM, disco, ISOs, redes y mas
+- **Editar VMs** - Modificar recursos, ISOs, redes y volumenes (requiere VM detenida)
+- **Iniciar/Detener/Reiniciar** - Control completo del ciclo de vida
+- **Eliminar VMs** - Con confirmacion y limpieza automatica de recursos
+- **Doble ISO** - ISO principal (instalacion) + ISO secundaria (drivers VirtIO, spice-tools)
+- **Boot order configurable** - Disco, CDROM, Red
+
+### Consola SPICE
+- **SPICE HTML5** - Acceso remoto de alta calidad desde el navegador
+- **Panel dividido** - Ver el dashboard y la consola simultaneamente
+- **Fullscreen** - Modo pantalla completa para la consola
+- **Clipboard compartido** - Copiar/pegar entre host y guest (con spice-vdagent)
+- **Resize automatico** - La resolucion se adapta al tamano de la ventana
+- **Redireccion USB** - Soporte para 2 dispositivos USB redirigidos
+
+### Redes Avanzadas
+- **NAT** - Red privada con acceso a internet y port forwarding
+- **Bridge** - Conexion directa al bridge del host (acceso LAN)
+- **MacVTAP** - Conexion directa a interfaz fisica (maximo rendimiento)
+- **Isolated** - Sin acceso a red externa (testing, seguridad)
+- **Modelos de NIC** - VirtIO (mejor rendimiento), e1000, RTL8139
+
+### Volumenes
+- **Crear volumenes** - qcow2 o raw, de 1GB a 1TB
+- **Attach/Detach** - Adjuntar y desadjuntar volumenes desde el modal de edicion
+- **Vista dedicada** - Seccion Volumes en el sidebar para gestionar todos los discos
+
+### Snapshots
+- **Crear snapshots** - Capturar el estado actual del disco
+- **Restaurar** - Volver a un snapshot anterior
+- **Eliminar** - Limpiar snapshots antiguos
+
+### Hardware
+- **QEMU/KVM** - Virtualizacion con aceleracion por hardware
+- **UEFI + Secure Boot** - Soporte completo para Windows 11
+- **TPM 2.0** - Emulacion de TPM con swtpm
+- **Modelos de CPU** - host, qemu64, max, Skylake-Client, EPYC
+- **Display QXL** - Optimizado para SPICE con 64MB de VRAM
+
+## Stack Tecnologico
+
+| Componente | Tecnologia |
+|-----------|------------|
+| Backend | Python 3.8+ / FastAPI |
+| Frontend | TailwindCSS + Alpine.js |
+| Autenticacion | JWT (python-jose) + bcrypt |
+| Virtualizacion | QEMU/KVM |
+| Display remoto | SPICE (spice-html5) |
+| WebSocket proxy | websockify |
+| Modelos | Pydantic v2 |
 
 ## Sistemas Operativos Soportados
 
 | Sistema | Estado | Notas |
 |---------|--------|-------|
-| Windows 11 | ✅ Funcional | UEFI, Secure Boot, TPM 2.0 |
-| Windows 10 | ✅ Funcional | UEFI recomendado |
-| Debian/Ubuntu | ✅ Funcional | Con spice-vdagent |
-| Fedora/RHEL | ✅ Funcional | Con spice-vdagent |
-| Android-x86 | ✅ Funcional | Android 9.0+ |
-| Arch Linux | ✅ Funcional | Con spice-vdagent |
+| Windows 11 | Funcional | UEFI, Secure Boot, TPM 2.0 |
+| Windows 10 | Funcional | UEFI recomendado |
+| Debian/Ubuntu | Funcional | Con spice-vdagent |
+| Fedora/RHEL | Funcional | Con spice-vdagent |
+| Android-x86 | Funcional | Android 9.0+ |
+| Arch Linux | Funcional | Con spice-vdagent |
 
 ## Requisitos
 
@@ -34,7 +99,7 @@ Sistema web para administrar máquinas virtuales con QEMU/KVM.
 - OVMF (para UEFI)
 - Permisos de usuario con acceso a KVM
 
-### Instalar dependencias
+### Instalar dependencias del sistema
 
 **Ubuntu/Debian:**
 ```bash
@@ -66,7 +131,7 @@ echo "allow br0" | sudo tee /etc/qemu/bridge.conf
 sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper
 ```
 
-## Instalación
+## Instalacion
 
 1. Clonar el repositorio:
 ```bash
@@ -85,7 +150,7 @@ pip install -r requirements.txt
 3. Verificar permisos KVM:
 ```bash
 sudo usermod -a -G kvm $USER
-# Cerrar sesión y volver a entrar
+# Cerrar sesion y volver a entrar
 ```
 
 ## Uso
@@ -109,54 +174,82 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 http://localhost:8000
 ```
 
-### Conexión SPICE
+**Credenciales por defecto:** `admin` / `admin`
 
-**Desde navegador:** Usar la interfaz web integrada
+> Cambia la contrasena por defecto en produccion. Tambien configura la variable de entorno `JWT_SECRET_KEY` con una clave segura.
+
+### Conexion SPICE
+
+**Desde el dashboard:** Click en "Console" en cualquier VM running. Se abre un panel SPICE integrado en la misma pagina.
 
 **Con remote-viewer (mejor rendimiento):**
 ```bash
-sudo apt install virt-viewer  # Si no está instalado
+sudo apt install virt-viewer  # Si no esta instalado
 remote-viewer spice://localhost:5800
 ```
 
-### API Endpoints
+## API Endpoints
 
-#### VMs
+Todos los endpoints (excepto login) requieren header `Authorization: Bearer <token>`.
+
+### Autenticacion
+- `POST /api/auth/login` - Obtener token JWT
+- `POST /api/auth/logout` - Cerrar sesion
+- `GET /api/auth/me` - Info del usuario autenticado
+
+### VMs
 - `GET /api/vms` - Listar todas las VMs
-- `GET /api/vms/{vm_id}` - Obtener información de una VM
+- `GET /api/vms/{vm_id}` - Obtener info de una VM
 - `POST /api/vms` - Crear nueva VM
-- `PUT /api/vms/{vm_id}` - Actualizar configuración de VM
+- `PUT /api/vms/{vm_id}` - Actualizar configuracion de VM
 - `POST /api/vms/{vm_id}/start` - Iniciar VM
 - `POST /api/vms/{vm_id}/stop` - Detener VM
 - `POST /api/vms/{vm_id}/restart` - Reiniciar VM
 - `DELETE /api/vms/{vm_id}` - Eliminar VM
-- `GET /api/vms/{vm_id}/spice` - Obtener conexión SPICE
+- `GET /api/vms/{vm_id}/logs` - Ver logs de QEMU y serial
 
-#### Volúmenes
-- `GET /api/volumes` - Listar volúmenes
+### SPICE
+- `GET /api/vms/{vm_id}/spice` - Obtener conexion SPICE (inicia proxy WebSocket)
+- `POST /api/vms/{vm_id}/spice/disconnect` - Desconectar proxy SPICE
+
+### VNC (legacy)
+- `GET /api/vms/{vm_id}/vnc` - Obtener conexion VNC
+- `POST /api/vms/{vm_id}/vnc/disconnect` - Desconectar proxy VNC
+
+### Volumenes
+- `GET /api/volumes` - Listar volumenes
+- `GET /api/volumes/{vol_id}` - Obtener volumen
 - `POST /api/volumes` - Crear volumen
 - `DELETE /api/volumes/{vol_id}` - Eliminar volumen
-- `POST /api/vms/{vm_id}/volumes/{vol_id}/attach` - Adjuntar volumen
-- `POST /api/vms/{vm_id}/volumes/{vol_id}/detach` - Desadjuntar volumen
+- `POST /api/vms/{vm_id}/volumes/{vol_id}` - Adjuntar volumen a VM
+- `DELETE /api/vms/{vm_id}/volumes/{vol_id}` - Desadjuntar volumen
 
-#### Snapshots
+### Snapshots
 - `GET /api/vms/{vm_id}/snapshots` - Listar snapshots
 - `POST /api/vms/{vm_id}/snapshots` - Crear snapshot
 - `POST /api/vms/{vm_id}/snapshots/{snap_id}/restore` - Restaurar snapshot
 - `DELETE /api/vms/{vm_id}/snapshots/{snap_id}` - Eliminar snapshot
 
-#### Sistema
+### Sistema
 - `GET /api/health` - Health check
 - `GET /api/isos` - Listar ISOs disponibles
 - `GET /api/bridges` - Listar bridges de red
 - `GET /api/interfaces` - Listar interfaces de red
+- `GET /api/system/user` - Usuario del sistema
+- `GET /api/spice-tools` - Estado de spice-guest-tools
 
-### Ejemplo de creación de VM
+### Ejemplo de creacion de VM
 
 ```bash
+# Obtener token
+TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}' | jq -r '.access_token')
+
 # VM con NAT (simple)
 curl -X POST http://localhost:8000/api/vms \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "name": "Ubuntu Server",
     "memory": 2048,
@@ -168,6 +261,7 @@ curl -X POST http://localhost:8000/api/vms \
 # VM con Bridge (acceso directo a la red)
 curl -X POST http://localhost:8000/api/vms \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "name": "Windows 11",
     "memory": 8192,
@@ -187,32 +281,38 @@ fast_vm/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py           # FastAPI application
-│   │   ├── models.py         # Pydantic models
-│   │   ├── vm_manager.py     # QEMU VM manager
-│   │   ├── spice_proxy.py    # SPICE WebSocket proxy
-│   │   └── vnc_proxy.py      # VNC proxy (legacy)
-│   └── requirements.txt
+│   │   ├── main.py           # FastAPI app + rutas
+│   │   ├── auth.py           # Autenticacion JWT + bcrypt
+│   │   ├── models.py         # Modelos Pydantic (VM, Volume, Snapshot, Auth)
+│   │   ├── vm_manager.py     # Gestor de VMs con QEMU
+│   │   ├── spice_proxy.py    # Proxy WebSocket para SPICE
+│   │   └── vnc_proxy.py      # Proxy VNC (legacy)
+│   ├── requirements.txt
+│   └── users.json            # Base de datos de usuarios
 ├── frontend/
-│   ├── index.html
+│   ├── index.html            # Dashboard principal (TailwindCSS + Alpine.js)
+│   ├── login.html            # Pagina de login
 │   ├── style.css
-│   ├── app.js
-│   └── spice/                # SPICE HTML5 client
-├── vms/                      # VM storage
-│   ├── vms.json              # VM configurations
-│   ├── volumes.json          # Volume configurations
-│   └── volumes/              # Volume files
-├── images/                   # ISO images
+│   ├── app.js                # Logica del dashboard (Alpine.js)
+│   ├── spice/                # Cliente SPICE HTML5
+│   └── vnc/                  # Cliente noVNC (legacy)
+├── vms/                      # Almacenamiento de VMs
+│   ├── vms.json              # Configuraciones de VMs
+│   ├── volumes.json          # Configuraciones de volumenes
+│   └── volumes/              # Archivos de volumenes
+├── images/                   # Imagenes ISO
 ├── start.sh
+├── config.example.json
+├── LICENSE
 └── Readme.md
 ```
 
-## Configuración de Guest
+## Configuracion de Guest
 
 ### Windows
 
-1. Durante la instalación, cargar drivers VirtIO desde el CD secundario
-2. Después de instalar, ejecutar `virtio-win-guest-tools.exe` desde el CD
+1. Durante la instalacion, cargar drivers VirtIO desde el CD secundario
+2. Despues de instalar, ejecutar `virtio-win-guest-tools.exe` desde el CD
 3. Instalar SPICE Guest Tools para clipboard y resize
 
 ### Linux (Debian/Ubuntu)
@@ -224,39 +324,40 @@ sudo systemctl enable spice-vdagent
 
 ### Android-x86
 
-1. En el menú de boot, seleccionar "Installation"
-2. Crear partición y formatear como ext4
+1. En el menu de boot, seleccionar "Installation"
+2. Crear particion y formatear como ext4
 3. Instalar GRUB
-4. Después de instalar, el resize funciona automáticamente
+4. Despues de instalar, el resize funciona automaticamente
 
 ## Tipos de Red
 
-| Tipo | Descripción | Caso de uso |
+| Tipo | Descripcion | Caso de uso |
 |------|-------------|-------------|
-| NAT | Red privada con acceso a internet | Desarrollo, aislamiento |
+| NAT | Red privada con acceso a internet y port forwarding | Desarrollo, aislamiento |
 | Bridge | Conectado directamente al bridge del host | Servidores, acceso LAN |
-| MacVTAP | Conexión directa a interfaz física | Máximo rendimiento |
+| MacVTAP | Conexion directa a interfaz fisica | Maximo rendimiento |
 | Isolated | Sin acceso a red externa | Testing, seguridad |
 
 ## Seguridad
 
-**IMPORTANTE**: Este sistema no incluye autenticación. Para producción:
+El sistema incluye autenticacion JWT. Para un entorno de produccion:
 
-1. Implementar autenticación (JWT, OAuth, etc.)
-2. Usar HTTPS con certificados válidos
-3. Restringir acceso por firewall
-4. Configurar permisos de archivos correctamente
-5. No exponer puertos SPICE directamente a internet
+1. Cambiar la contrasena del usuario `admin` por defecto
+2. Configurar `JWT_SECRET_KEY` como variable de entorno con una clave segura
+3. Usar HTTPS con certificados validos (reverse proxy con nginx/caddy)
+4. Restringir acceso por firewall
+5. Configurar permisos de archivos correctamente
+6. No exponer puertos SPICE directamente a internet
 
-## Solución de Problemas
+## Solucion de Problemas
 
 ### KVM no disponible
 
 ```bash
-# Verificar soporte de virtualización
+# Verificar soporte de virtualizacion
 egrep -c '(vmx|svm)' /proc/cpuinfo  # Debe ser > 0
 
-# Cargar módulos
+# Cargar modulos
 sudo modprobe kvm kvm_intel  # o kvm_amd
 
 # Verificar permisos
@@ -267,7 +368,7 @@ sudo usermod -aG kvm $USER
 ### Bridge no funciona
 
 ```bash
-# Verificar configuración
+# Verificar configuracion
 cat /etc/qemu/bridge.conf  # Debe contener "allow br0"
 
 # Verificar permisos del helper
@@ -277,10 +378,10 @@ ls -la /usr/lib/qemu/qemu-bridge-helper  # Debe tener setuid
 ### SPICE no conecta
 
 ```bash
-# Verificar que la VM está corriendo
+# Verificar que la VM esta corriendo
 ps aux | grep qemu
 
-# Probar conexión directa
+# Probar conexion directa
 remote-viewer spice://localhost:5800
 ```
 
@@ -290,38 +391,35 @@ remote-viewer spice://localhost:5800
 # Dentro de la VM
 sudo apt install spice-vdagent xserver-xorg-video-qxl
 sudo systemctl restart spice-vdagent
-
-# Usar remote-viewer, no el cliente web
-remote-viewer spice://localhost:5800
 ```
 
 ## Roadmap
 
 ### Implementado
-- [x] Gestión básica de VMs (crear, iniciar, detener, eliminar)
-- [x] Soporte SPICE con cliente web
-- [x] Redes: NAT, Bridge, MacVTAP, Isolated
+- [x] Dashboard web con TailwindCSS + Alpine.js
+- [x] Autenticacion JWT con bcrypt
+- [x] Gestion de VMs (crear, editar, iniciar, detener, eliminar)
+- [x] Consola SPICE integrada en el navegador
+- [x] Redes: NAT con port forwarding, Bridge, MacVTAP, Isolated
 - [x] UEFI + Secure Boot
 - [x] TPM 2.0 emulado
-- [x] Volúmenes adicionales
-- [x] Snapshots
-- [x] Soporte Windows 11
-- [x] Soporte Linux (Debian, Ubuntu, Fedora, Arch)
-- [x] Soporte Android-x86
-
-### En progreso
-- [ ] Mejoras en cliente web SPICE (resize automático)
+- [x] Volumenes (crear, attach/detach, eliminar)
+- [x] Snapshots (crear, restaurar, eliminar)
+- [x] Soporte Windows 11, Linux y Android-x86
+- [x] Doble ISO (instalacion + drivers)
+- [x] Auto-refresh del dashboard
+- [x] Logs de VM (QEMU + serial)
 
 ### Planificado
-- [ ] **Templates y clonación** - Clonar VMs existentes rápidamente
-- [ ] **Métricas en tiempo real** - CPU, RAM, disco, red por VM
-- [ ] **Cloud-init** - Provisioning automático de VMs Linux
+- [ ] **Templates y clonacion** - Clonar VMs existentes rapidamente
+- [ ] **Metricas en tiempo real** - CPU, RAM, disco, red por VM
+- [ ] **Cloud-init** - Provisioning automatico de VMs Linux
 - [ ] **GPU Passthrough** - Para gaming y ML
-- [ ] **Migración en vivo** - Mover VMs entre hosts
-- [ ] **Clustering** - Gestionar múltiples hosts
-- [ ] **Autenticación** - JWT/OAuth para acceso seguro
+- [ ] **Migracion en vivo** - Mover VMs entre hosts
+- [ ] **Clustering** - Gestionar multiples hosts
+- [ ] **Roles de usuario** - Permisos granulares por usuario
 - [ ] **ARM emulation** - Raspberry Pi OS, Android ARM
-- [ ] **API de backups** - Backups automáticos programados
+- [ ] **API de backups** - Backups automaticos programados
 - [ ] **Importar/Exportar** - OVA, VMDK, VHD
 - [ ] **USB Passthrough desde web** - Redirigir dispositivos USB
 
@@ -329,10 +427,10 @@ remote-viewer spice://localhost:5800
 
 1. Fork el proyecto
 2. Crea una rama para tu feature (`git checkout -b feature/NuevaFeature`)
-3. Commit tus cambios (`git commit -m 'Añadir NuevaFeature'`)
+3. Commit tus cambios (`git commit -m 'Anadir NuevaFeature'`)
 4. Push a la rama (`git push origin feature/NuevaFeature`)
 5. Abre un Pull Request
 
 ## Licencia
 
-MIT License - ver archivo LICENSE para más detalles.
+MIT License - ver archivo LICENSE para mas detalles.
