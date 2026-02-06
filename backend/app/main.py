@@ -10,7 +10,8 @@ from .models import (
     Volume, VolumeCreate, VolumeResponse,
     Snapshot, SnapshotCreate, SnapshotResponse,
     LoginRequest, Token, UserInfo,
-    ChangePasswordRequest, CreateUserRequest
+    ChangePasswordRequest, CreateUserRequest,
+    VMClone, CloudInitConfig
 )
 from .vm_manager import VMManager
 from .auth import (
@@ -231,6 +232,43 @@ async def restart_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_curren
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/vms/{vm_id}/clone", response_model=VMResponse)
+async def clone_vm(vm_id: str, clone_data: VMClone, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Clone a VM (must be stopped)"""
+    try:
+        vm = vm_manager.clone_vm(
+            vm_id,
+            name=clone_data.name,
+            memory=clone_data.memory,
+            cpus=clone_data.cpus
+        )
+        return VMResponse(
+            success=True,
+            message=f"VM '{vm.name}' cloned successfully",
+            vm=vm
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/cloudinit")
+async def create_cloudinit(config: CloudInitConfig, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Create a cloud-init ISO for automatic VM provisioning"""
+    try:
+        iso_path = vm_manager.create_cloudinit_iso(config)
+        return {
+            "success": True,
+            "message": f"Cloud-init ISO created for '{config.hostname}'",
+            "iso_path": iso_path
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

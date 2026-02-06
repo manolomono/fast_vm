@@ -194,3 +194,25 @@ class SnapshotResponse(BaseModel):
     success: bool
     message: str
     snapshot: Optional[Snapshot] = None
+
+
+# ==================== Clone Models ====================
+
+class VMClone(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50)
+    memory: Optional[int] = Field(None, ge=512, le=32768)
+    cpus: Optional[int] = Field(None, ge=1, le=16)
+
+
+# ==================== Cloud-init Models ====================
+
+class CloudInitConfig(BaseModel):
+    hostname: str = Field(..., min_length=1, max_length=63)
+    username: str = Field(default="user", min_length=1, max_length=32)
+    password: Optional[str] = Field(None, min_length=1, max_length=128)
+    ssh_authorized_keys: List[str] = []
+    packages: List[str] = []
+    runcmd: List[str] = []
+    static_ip: Optional[str] = None  # e.g. "192.168.1.100/24"
+    gateway: Optional[str] = None
+    dns: List[str] = ["8.8.8.8", "8.8.4.4"]

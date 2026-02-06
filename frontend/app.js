@@ -53,12 +53,28 @@ function dashboard() {
         passwordForm: { current_password: '', new_password: '', confirm_password: '' },
         createUserForm: { username: '', password: '', is_admin: false },
 
+        // Clone & Cloud-init
+        cloneForm: { name: '', memory: null, cpus: null },
+        cloneSource: null,
+        cloudInitForm: {
+            hostname: '',
+            username: 'user',
+            password: '',
+            ssh_authorized_keys: '',
+            packages: 'spice-vdagent qemu-guest-agent',
+            static_ip: '',
+            gateway: '',
+            dns: '8.8.8.8, 8.8.4.4'
+        },
+
         // Modals
         showCreateModal: false,
         showEditModal: false,
         showVolumeModal: false,
         showDeleteModal: false,
         showCreateUserModal: false,
+        showCloneModal: false,
+        showCloudInitModal: false,
         deleteTarget: null,
         editTarget: null,
         selectedVolumeToAttach: '',
@@ -251,6 +267,69 @@ function dashboard() {
                 });
                 this.showToast('Password changed successfully', 'success');
                 this.passwordForm = { current_password: '', new_password: '', confirm_password: '' };
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        // Clone
+        openCloneModal(vm) {
+            this.cloneSource = vm;
+            this.cloneForm = { name: vm.name + ' (clone)', memory: vm.memory, cpus: vm.cpus };
+            this.showCloneModal = true;
+        },
+
+        async cloneVM() {
+            if (!this.cloneSource) return;
+            try {
+                const data = { name: this.cloneForm.name };
+                if (this.cloneForm.memory) data.memory = this.cloneForm.memory;
+                if (this.cloneForm.cpus) data.cpus = this.cloneForm.cpus;
+
+                await api(`/vms/${this.cloneSource.id}/clone`, {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+                this.showToast('VM cloned successfully', 'success');
+                this.showCloneModal = false;
+                this.cloneSource = null;
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        // Cloud-init
+        async createCloudInit() {
+            try {
+                const data = {
+                    hostname: this.cloudInitForm.hostname,
+                    username: this.cloudInitForm.username,
+                    packages: this.cloudInitForm.packages
+                        ? this.cloudInitForm.packages.split(/[\s,]+/).filter(Boolean) : [],
+                    dns: this.cloudInitForm.dns
+                        ? this.cloudInitForm.dns.split(/[\s,]+/).filter(Boolean) : ['8.8.8.8'],
+                };
+                if (this.cloudInitForm.password) data.password = this.cloudInitForm.password;
+                if (this.cloudInitForm.ssh_authorized_keys) {
+                    data.ssh_authorized_keys = this.cloudInitForm.ssh_authorized_keys
+                        .split('\n').filter(Boolean);
+                }
+                if (this.cloudInitForm.static_ip) data.static_ip = this.cloudInitForm.static_ip;
+                if (this.cloudInitForm.gateway) data.gateway = this.cloudInitForm.gateway;
+
+                await api('/cloudinit', {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+                this.showToast(`Cloud-init ISO created for '${data.hostname}'. Use it as secondary ISO when creating a VM.`, 'success');
+                this.showCloudInitModal = false;
+                this.cloudInitForm = {
+                    hostname: '', username: 'user', password: '',
+                    ssh_authorized_keys: '', packages: 'spice-vdagent qemu-guest-agent',
+                    static_ip: '', gateway: '', dns: '8.8.8.8, 8.8.4.4'
+                };
+                await this.loadIsos();
             } catch (err) {
                 this.showToast(err.message, 'error');
             }
@@ -763,6 +842,94 @@ function dashboard() {
                             <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
                                 <button type="button" @click="showCreateUserModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
                                 <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Create User</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Clone VM Modal -->
+                <div x-show="showCloneModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showCloneModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-md" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Clone VM</h2>
+                            <button @click="showCloneModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <form @submit.prevent="cloneVM()" class="p-6 space-y-4">
+                            <p class="text-sm text-slate-400">Cloning from: <span class="text-white" x-text="cloneSource?.name"></span></p>
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Clone Name</label>
+                                <input x-model="cloneForm.name" type="text" required class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Memory (MB)</label>
+                                    <input x-model.number="cloneForm.memory" type="number" min="512" max="32768" step="256" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">CPUs</label>
+                                    <input x-model.number="cloneForm.cpus" type="number" min="1" max="16" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                            </div>
+                            <p class="text-xs text-slate-500">The clone uses a copy-on-write disk backed by the original. New MAC addresses are generated for all NICs.</p>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showCloneModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg">Clone</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Cloud-init Modal -->
+                <div x-show="showCloudInitModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showCloudInitModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Create Cloud-init ISO</h2>
+                            <button @click="showCloudInitModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <form @submit.prevent="createCloudInit()" class="p-6 space-y-4">
+                            <p class="text-sm text-slate-400">Generate an ISO with cloud-init config for automatic Linux VM provisioning. Use it as secondary ISO when creating or editing a VM.</p>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Hostname *</label>
+                                    <input x-model="cloudInitForm.hostname" type="text" required placeholder="my-server" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-slate-400 mb-1">Username</label>
+                                    <input x-model="cloudInitForm.username" type="text" placeholder="user" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Password</label>
+                                <input x-model="cloudInitForm.password" type="text" placeholder="Leave empty for SSH-only" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">SSH Authorized Keys (one per line)</label>
+                                <textarea x-model="cloudInitForm.ssh_authorized_keys" rows="3" placeholder="ssh-ed25519 AAAA..." class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm font-mono"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Packages (space or comma separated)</label>
+                                <input x-model="cloudInitForm.packages" type="text" placeholder="spice-vdagent qemu-guest-agent" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div class="border-t border-slate-700 pt-4">
+                                <p class="text-sm text-slate-400 mb-3">Network (optional - leave empty for DHCP)</p>
+                                <div class="grid grid-cols-3 gap-4">
+                                    <div>
+                                        <label class="block text-sm text-slate-500 mb-1">Static IP</label>
+                                        <input x-model="cloudInitForm.static_ip" type="text" placeholder="192.168.1.100/24" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-slate-500 mb-1">Gateway</label>
+                                        <input x-model="cloudInitForm.gateway" type="text" placeholder="192.168.1.1" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm text-slate-500 mb-1">DNS</label>
+                                        <input x-model="cloudInitForm.dns" type="text" placeholder="8.8.8.8, 8.8.4.4" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showCloudInitModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg">Create ISO</button>
                             </div>
                         </form>
                     </div>

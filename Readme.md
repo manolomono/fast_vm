@@ -36,10 +36,18 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 ### Gestion de VMs
 - **Crear VMs** - Modal con configuracion de nombre, CPU, RAM, disco, ISOs, redes y mas
 - **Editar VMs** - Modificar recursos, ISOs, redes y volumenes (requiere VM detenida)
+- **Clonar VMs** - Clon copy-on-write con nuevas MACs, opcion de cambiar CPU/RAM
 - **Iniciar/Detener/Reiniciar** - Control completo del ciclo de vida
 - **Eliminar VMs** - Con confirmacion y limpieza automatica de recursos
-- **Doble ISO** - ISO principal (instalacion) + ISO secundaria (drivers VirtIO, spice-tools)
+- **Doble ISO** - ISO principal (instalacion) + ISO secundaria (drivers VirtIO, cloud-init)
 - **Boot order configurable** - Disco, CDROM, Red
+
+### Cloud-init
+- **Generador de ISOs** - Crea ISOs cloud-init desde el dashboard con un formulario visual
+- **Configuracion completa** - Hostname, usuario, password, SSH keys, paquetes
+- **Red** - DHCP por defecto o IP estatica con gateway y DNS
+- **Paquetes automaticos** - Instala spice-vdagent, qemu-guest-agent y lo que necesites
+- **Uso sencillo** - Genera la ISO y usala como secondary ISO al crear/editar una VM
 
 ### Consola SPICE
 - **SPICE HTML5** - Acceso remoto de alta calidad desde el navegador
@@ -213,6 +221,10 @@ Todos los endpoints (excepto login) requieren header `Authorization: Bearer <tok
 - `PUT /api/vms/{vm_id}` - Actualizar configuracion de VM
 - `POST /api/vms/{vm_id}/start` - Iniciar VM
 - `POST /api/vms/{vm_id}/stop` - Detener VM
+- `POST /api/vms/{vm_id}/clone` - Clonar una VM (debe estar detenida)
+
+### Cloud-init
+- `POST /api/cloudinit` - Crear ISO cloud-init para provisioning automatico
 - `POST /api/vms/{vm_id}/restart` - Reiniciar VM
 - `DELETE /api/vms/{vm_id}` - Eliminar VM
 - `GET /api/vms/{vm_id}/logs` - Ver logs de QEMU y serial
@@ -416,6 +428,8 @@ sudo systemctl restart spice-vdagent
 - [x] Metricas en tiempo real del host (CPU, RAM, disco)
 - [x] Metricas en tiempo real por VM (CPU%, RAM, I/O)
 - [x] Gestion de VMs (crear, editar, iniciar, detener, eliminar)
+- [x] Clonacion de VMs (copy-on-write, nuevas MACs)
+- [x] Cloud-init (generador de ISOs desde el dashboard)
 - [x] Consola SPICE integrada en el navegador
 - [x] Redes: NAT con port forwarding, Bridge, MacVTAP, Isolated
 - [x] UEFI + Secure Boot
@@ -428,8 +442,6 @@ sudo systemctl restart spice-vdagent
 - [x] Logs de VM (QEMU + serial)
 
 ### Planificado
-- [ ] **Templates y clonacion** - Clonar VMs existentes rapidamente
-- [ ] **Cloud-init** - Provisioning automatico de VMs Linux
 - [ ] **GPU Passthrough** - Para gaming y ML
 - [ ] **Migracion en vivo** - Mover VMs entre hosts
 - [ ] **Clustering** - Gestionar multiples hosts

@@ -8,9 +8,11 @@ import re
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
+import shutil
+import tempfile
 from .models import (
     VMStatus, VMInfo, VMCreate, NetworkConfig, PortForward,
-    Volume, VolumeCreate, Snapshot, SnapshotCreate
+    Volume, VolumeCreate, Snapshot, SnapshotCreate, CloudInitConfig
 )
 from .vnc_proxy import VNCProxyManager
 from .spice_proxy import SpiceProxyManager
@@ -1003,6 +1005,202 @@ class VMManager:
             'path': str(self.spice_tools_iso) if exists else None,
             'download_url': 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe'
         }
+
+    # ==================== Clone ====================
+
+    def clone_vm(self, vm_id: str, name: str, memory: Optional[int] = None, cpus: Optional[int] = None) -> VMInfo:
+        """Clone a VM (must be stopped)"""
+        if vm_id not in self.vms:
+            raise ValueError(f"VM {vm_id} not found")
+
+        source_vm = self.vms[vm_id]
+        self._update_vm_status(vm_id)
+
+        if source_vm['status'] == VMStatus.RUNNING.value:
+            raise ValueError("Cannot clone a running VM. Stop it first.")
+
+        # Create new VM directory
+        new_vm_id = str(uuid.uuid4())
+        new_vm_dir = self.vms_dir / new_vm_id
+        new_vm_dir.mkdir(parents=True, exist_ok=True)
+
+        new_disk_path = new_vm_dir / "disk.qcow2"
+
+        # Clone the disk (full copy)
+        source_disk = source_vm.get('disk_path')
+        if not source_disk or not os.path.exists(source_disk):
+            raise ValueError("Source VM disk not found")
+
+        subprocess.run([
+            "qemu-img", "create", "-f", "qcow2",
+            "-b", source_disk, "-F", "qcow2",
+            str(new_disk_path)
+        ], check=True, capture_output=True, text=True)
+
+        # Copy OVMF_VARS if exists
+        source_dir = self.vms_dir / vm_id
+        source_ovmf = source_dir / "OVMF_VARS.fd"
+        if source_ovmf.exists():
+            shutil.copy(source_ovmf, new_vm_dir / "OVMF_VARS.fd")
+
+        vnc_port = self._get_free_vnc_port()
+        spice_port = self._get_free_spice_port()
+
+        # Build new networks with fresh MACs
+        new_networks = []
+        for net in source_vm.get('networks', []):
+            new_net = dict(net)
+            new_net['id'] = str(uuid.uuid4())
+            new_net['mac_address'] = self._generate_mac_address()
+            new_networks.append(new_net)
+
+        new_vm_config = {
+            'id': new_vm_id,
+            'name': name,
+            'memory': memory or source_vm['memory'],
+            'cpus': cpus or source_vm['cpus'],
+            'disk_size': source_vm['disk_size'],
+            'disk_path': str(new_disk_path),
+            'iso_path': source_vm.get('iso_path'),
+            'secondary_iso_path': source_vm.get('secondary_iso_path'),
+            'vnc_port': vnc_port,
+            'spice_port': spice_port,
+            'status': VMStatus.STOPPED.value,
+            'pid': None,
+            'networks': new_networks,
+            'volumes': [],
+            'boot_order': source_vm.get('boot_order', ['disk', 'cdrom']),
+            'cpu_model': source_vm.get('cpu_model', 'host'),
+            'display_type': source_vm.get('display_type', 'qxl')
+        }
+
+        self.vms[new_vm_id] = new_vm_config
+        self._save_vms()
+
+        return VMInfo(**new_vm_config)
+
+    # ==================== Cloud-init ====================
+
+    def create_cloudinit_iso(self, config: CloudInitConfig) -> str:
+        """Create a cloud-init ISO with user-data and meta-data"""
+        # Create temp directory for cloud-init files
+        ci_dir = tempfile.mkdtemp(prefix="cloudinit_")
+
+        try:
+            # meta-data
+            meta_data = f"instance-id: {uuid.uuid4()}\nlocal-hostname: {config.hostname}\n"
+            with open(os.path.join(ci_dir, "meta-data"), 'w') as f:
+                f.write(meta_data)
+
+            # user-data
+            user_data_lines = ["#cloud-config"]
+            user_data_lines.append(f"hostname: {config.hostname}")
+            user_data_lines.append(f"manage_etc_hosts: true")
+
+            # User config
+            user_data_lines.append("users:")
+            user_data_lines.append(f"  - name: {config.username}")
+            user_data_lines.append(f"    sudo: ALL=(ALL) NOPASSWD:ALL")
+            user_data_lines.append(f"    shell: /bin/bash")
+            user_data_lines.append(f"    lock_passwd: false")
+            if config.password:
+                user_data_lines.append(f"    plain_text_passwd: '{config.password}'")
+            if config.ssh_authorized_keys:
+                user_data_lines.append(f"    ssh_authorized_keys:")
+                for key in config.ssh_authorized_keys:
+                    user_data_lines.append(f"      - {key}")
+
+            # Packages
+            if config.packages:
+                user_data_lines.append("packages:")
+                for pkg in config.packages:
+                    user_data_lines.append(f"  - {pkg}")
+
+            # Run commands
+            user_data_lines.append("runcmd:")
+            user_data_lines.append("  - systemctl enable spice-vdagent 2>/dev/null || true")
+            for cmd in config.runcmd:
+                user_data_lines.append(f"  - {cmd}")
+
+            user_data_lines.append("power_state:")
+            user_data_lines.append("  mode: reboot")
+            user_data_lines.append("  condition: true")
+
+            with open(os.path.join(ci_dir, "user-data"), 'w') as f:
+                f.write('\n'.join(user_data_lines) + '\n')
+
+            # network-config (if static IP specified)
+            if config.static_ip:
+                net_config_lines = [
+                    "version: 2",
+                    "ethernets:",
+                    "  id0:",
+                    "    match:",
+                    "      name: 'en*'",
+                    f"    addresses: [{config.static_ip}]",
+                ]
+                if config.gateway:
+                    net_config_lines.append(f"    gateway4: {config.gateway}")
+                if config.dns:
+                    net_config_lines.append("    nameservers:")
+                    net_config_lines.append(f"      addresses: [{', '.join(config.dns)}]")
+
+                with open(os.path.join(ci_dir, "network-config"), 'w') as f:
+                    f.write('\n'.join(net_config_lines) + '\n')
+
+            # Generate ISO
+            iso_path = self.vms_dir.parent / "images" / f"cloudinit-{config.hostname}.iso"
+            iso_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Try genisoimage first, fall back to mkisofs
+            for tool in ["genisoimage", "mkisofs"]:
+                try:
+                    cmd = [
+                        tool,
+                        "-output", str(iso_path),
+                        "-volid", "cidata",
+                        "-joliet",
+                        "-rock",
+                        os.path.join(ci_dir, "meta-data"),
+                        os.path.join(ci_dir, "user-data"),
+                    ]
+                    # Add network-config if exists
+                    nc_path = os.path.join(ci_dir, "network-config")
+                    if os.path.exists(nc_path):
+                        cmd.append(nc_path)
+
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    return str(iso_path)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+
+            # Fallback: try xorriso
+            try:
+                cmd = [
+                    "xorriso", "-as", "genisoimage",
+                    "-output", str(iso_path),
+                    "-volid", "cidata",
+                    "-joliet",
+                    "-rock",
+                    os.path.join(ci_dir, "meta-data"),
+                    os.path.join(ci_dir, "user-data"),
+                ]
+                nc_path = os.path.join(ci_dir, "network-config")
+                if os.path.exists(nc_path):
+                    cmd.append(nc_path)
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                return str(iso_path)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+
+            raise ValueError(
+                "No ISO generation tool found. Install genisoimage: "
+                "sudo apt install genisoimage"
+            )
+
+        finally:
+            # Cleanup temp dir
+            shutil.rmtree(ci_dir, ignore_errors=True)
 
     # ==================== Metrics ====================
 
