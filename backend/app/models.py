@@ -28,6 +28,17 @@ class UserInfo(BaseModel):
     is_admin: bool
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=4, max_length=128)
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=4, max_length=128)
+    is_admin: bool = False
+
+
 # ==================== VM Models ====================
 
 class VMStatus(str, Enum):

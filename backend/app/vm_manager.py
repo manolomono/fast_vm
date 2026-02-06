@@ -1004,6 +1004,59 @@ class VMManager:
             'download_url': 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe'
         }
 
+    # ==================== Metrics ====================
+
+    def get_vm_metrics(self, vm_id: str) -> Dict:
+        """Get real-time metrics for a running VM"""
+        if vm_id not in self.vms:
+            raise ValueError(f"VM {vm_id} not found")
+
+        vm = self.vms[vm_id]
+        self._update_vm_status(vm_id)
+
+        if vm['status'] != VMStatus.RUNNING.value:
+            raise ValueError("VM is not running")
+
+        pid = vm.get('pid')
+        if not pid:
+            raise ValueError("VM process not found")
+
+        try:
+            proc = psutil.Process(pid)
+
+            # CPU usage (percentage of one core)
+            cpu_percent = proc.cpu_percent(interval=0.1)
+
+            # Memory info
+            mem_info = proc.memory_info()
+            mem_rss_mb = mem_info.rss / (1024 * 1024)
+
+            # I/O counters
+            try:
+                io = proc.io_counters()
+                io_read_mb = io.read_bytes / (1024 * 1024)
+                io_write_mb = io.write_bytes / (1024 * 1024)
+            except (psutil.AccessDenied, AttributeError):
+                io_read_mb = 0
+                io_write_mb = 0
+
+            # Configured resources
+            configured_mem_mb = vm.get('memory', 0)
+
+            return {
+                "vm_id": vm_id,
+                "status": "running",
+                "cpu_percent": round(cpu_percent, 1),
+                "cpu_count": vm.get('cpus', 1),
+                "memory_used_mb": round(mem_rss_mb, 1),
+                "memory_configured_mb": configured_mem_mb,
+                "memory_percent": round((mem_rss_mb / configured_mem_mb * 100), 1) if configured_mem_mb > 0 else 0,
+                "io_read_mb": round(io_read_mb, 1),
+                "io_write_mb": round(io_write_mb, 1),
+            }
+        except psutil.NoSuchProcess:
+            raise ValueError("VM process no longer running")
+
     # ==================== Volume Management ====================
 
     def create_volume(self, vol_data: VolumeCreate) -> Volume:

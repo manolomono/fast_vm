@@ -44,11 +44,21 @@ function dashboard() {
         consoleVm: null,
         consoleUrl: '',
 
+        // Metrics
+        vmMetrics: {},
+        hostMetrics: null,
+
+        // Users
+        users: [],
+        passwordForm: { current_password: '', new_password: '', confirm_password: '' },
+        createUserForm: { username: '', password: '', is_admin: false },
+
         // Modals
         showCreateModal: false,
         showEditModal: false,
         showVolumeModal: false,
         showDeleteModal: false,
+        showCreateUserModal: false,
         deleteTarget: null,
         editTarget: null,
         selectedVolumeToAttach: '',
@@ -102,7 +112,14 @@ function dashboard() {
                 this.injectModals();
 
                 // Auto-refresh every 10 seconds
-                setInterval(() => this.loadVMs(), 10000);
+                setInterval(() => {
+                    this.loadVMs();
+                    this.loadMetrics();
+                }, 10000);
+
+                // Load metrics immediately
+                this.loadMetrics();
+                if (this.user?.is_admin) this.loadUsers();
             } catch (err) {
                 console.error('Init error:', err);
                 localStorage.removeItem('token');
@@ -157,6 +174,85 @@ function dashboard() {
                 this.interfaces = await api('/interfaces');
             } catch (err) {
                 console.error('Error loading interfaces:', err);
+            }
+        },
+
+        // Metrics
+        async loadMetrics() {
+            // Host metrics
+            try {
+                this.hostMetrics = await api('/system/metrics');
+            } catch (err) {
+                console.error('Error loading host metrics:', err);
+            }
+
+            // VM metrics (only for running VMs)
+            const running = this.vms.filter(v => v.status === 'running');
+            for (const vm of running) {
+                try {
+                    this.vmMetrics[vm.id] = await api(`/vms/${vm.id}/metrics`);
+                } catch (err) {
+                    // Silently ignore - VM may have just stopped
+                }
+            }
+        },
+
+        // User Management
+        async loadUsers() {
+            try {
+                this.users = await api('/auth/users');
+            } catch (err) {
+                console.error('Error loading users:', err);
+            }
+        },
+
+        async createUser() {
+            try {
+                await api('/auth/users', {
+                    method: 'POST',
+                    body: JSON.stringify(this.createUserForm)
+                });
+                this.showToast('User created successfully', 'success');
+                this.showCreateUserModal = false;
+                this.createUserForm = { username: '', password: '', is_admin: false };
+                await this.loadUsers();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        deleteUserConfirm(u) {
+            if (!confirm(`Delete user "${u.username}"?`)) return;
+            this.deleteUser(u.username);
+        },
+
+        async deleteUser(username) {
+            try {
+                await api(`/auth/users/${username}`, { method: 'DELETE' });
+                this.showToast('User deleted', 'success');
+                await this.loadUsers();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async changePassword() {
+            if (this.passwordForm.new_password !== this.passwordForm.confirm_password) {
+                this.showToast('Passwords do not match', 'error');
+                return;
+            }
+            try {
+                await api('/auth/change-password', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        current_password: this.passwordForm.current_password,
+                        new_password: this.passwordForm.new_password
+                    })
+                });
+                this.showToast('Password changed successfully', 'success');
+                this.passwordForm = { current_password: '', new_password: '', confirm_password: '' };
+            } catch (err) {
+                this.showToast(err.message, 'error');
             }
         },
 
@@ -639,6 +735,34 @@ function dashboard() {
                             <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
                                 <button type="button" @click="showVolumeModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
                                 <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Create</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Create User Modal -->
+                <div x-show="showCreateUserModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showCreateUserModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-md" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Create User</h2>
+                            <button @click="showCreateUserModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <form @submit.prevent="createUser()" class="p-6 space-y-4">
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Username</label>
+                                <input x-model="createUserForm.username" type="text" required minlength="3" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm text-slate-400 mb-1">Password</label>
+                                <input x-model="createUserForm.password" type="password" required minlength="4" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary-500">
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <input x-model="createUserForm.is_admin" type="checkbox" id="newUserAdmin" class="w-4 h-4 rounded bg-slate-700 border-slate-600 text-primary-600 focus:ring-primary-500">
+                                <label for="newUserAdmin" class="text-sm text-slate-300">Admin privileges</label>
+                            </div>
+                            <div class="flex justify-end space-x-3 pt-4 border-t border-slate-700">
+                                <button type="button" @click="showCreateUserModal = false" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg">Cancel</button>
+                                <button type="submit" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 rounded-lg">Create User</button>
                             </div>
                         </form>
                     </div>

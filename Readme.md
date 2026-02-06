@@ -14,19 +14,24 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 
 ### Dashboard Web
 - **UI moderna con dark theme** - Construido con TailwindCSS + Alpine.js
-- **Sidebar con navegacion** - Dashboard, Volumes y listado de VMs con indicador de estado
+- **Sidebar con navegacion** - Dashboard, Volumes, Users y listado de VMs con indicador de estado
 - **Tarjetas de estadisticas** - Total VMs, Running, Stopped, Volumes en tiempo real
-- **Cuadricula de VMs** - Cards con info de CPU, RAM, disco y controles rapidos
+- **Metricas del host** - Barras de progreso de CPU, RAM y disco del servidor
+- **Metricas por VM** - CPU%, RAM usada e I/O de disco en tiempo real para cada VM running
+- **Cuadricula de VMs** - Cards con info de CPU, RAM, disco, metricas live y controles rapidos
 - **Auto-refresh** - El dashboard se actualiza automaticamente cada 10 segundos
 - **Notificaciones toast** - Feedback visual de exito/error en cada accion
 - **Responsive** - Adaptable a diferentes tamanos de pantalla
 
-### Autenticacion
+### Autenticacion y Gestion de Usuarios
 - **Login con JWT** - Pagina de login con tokens Bearer
 - **Passwords con bcrypt** - Hash seguro de contrasenas
 - **Usuario por defecto** - Se crea automaticamente `admin/admin` en el primer inicio
 - **Sesion persistente** - Token almacenado en localStorage (24h de duracion)
 - **Proteccion de API** - Todos los endpoints requieren autenticacion
+- **Cambio de contrasena** - Cada usuario puede cambiar su propia contrasena
+- **Panel de administracion** - Los admins pueden crear, listar y eliminar usuarios
+- **Roles** - Usuarios admin y usuarios regulares
 
 ### Gestion de VMs
 - **Crear VMs** - Modal con configuracion de nombre, CPU, RAM, disco, ISOs, redes y mas
@@ -196,6 +201,10 @@ Todos los endpoints (excepto login) requieren header `Authorization: Bearer <tok
 - `POST /api/auth/login` - Obtener token JWT
 - `POST /api/auth/logout` - Cerrar sesion
 - `GET /api/auth/me` - Info del usuario autenticado
+- `POST /api/auth/change-password` - Cambiar contrasena propia
+- `GET /api/auth/users` - Listar usuarios (solo admin)
+- `POST /api/auth/users` - Crear usuario (solo admin)
+- `DELETE /api/auth/users/{username}` - Eliminar usuario (solo admin)
 
 ### VMs
 - `GET /api/vms` - Listar todas las VMs
@@ -229,6 +238,10 @@ Todos los endpoints (excepto login) requieren header `Authorization: Bearer <tok
 - `POST /api/vms/{vm_id}/snapshots` - Crear snapshot
 - `POST /api/vms/{vm_id}/snapshots/{snap_id}/restore` - Restaurar snapshot
 - `DELETE /api/vms/{vm_id}/snapshots/{snap_id}` - Eliminar snapshot
+
+### Metricas
+- `GET /api/vms/{vm_id}/metrics` - Metricas en tiempo real de una VM (CPU%, RAM, I/O)
+- `GET /api/system/metrics` - Metricas del host (CPU, RAM, disco)
 
 ### Sistema
 - `GET /api/health` - Health check
@@ -398,6 +411,10 @@ sudo systemctl restart spice-vdagent
 ### Implementado
 - [x] Dashboard web con TailwindCSS + Alpine.js
 - [x] Autenticacion JWT con bcrypt
+- [x] Gestion de usuarios (crear, listar, eliminar) con panel admin
+- [x] Cambio de contrasena desde la UI
+- [x] Metricas en tiempo real del host (CPU, RAM, disco)
+- [x] Metricas en tiempo real por VM (CPU%, RAM, I/O)
 - [x] Gestion de VMs (crear, editar, iniciar, detener, eliminar)
 - [x] Consola SPICE integrada en el navegador
 - [x] Redes: NAT con port forwarding, Bridge, MacVTAP, Isolated
@@ -412,16 +429,16 @@ sudo systemctl restart spice-vdagent
 
 ### Planificado
 - [ ] **Templates y clonacion** - Clonar VMs existentes rapidamente
-- [ ] **Metricas en tiempo real** - CPU, RAM, disco, red por VM
 - [ ] **Cloud-init** - Provisioning automatico de VMs Linux
 - [ ] **GPU Passthrough** - Para gaming y ML
 - [ ] **Migracion en vivo** - Mover VMs entre hosts
 - [ ] **Clustering** - Gestionar multiples hosts
-- [ ] **Roles de usuario** - Permisos granulares por usuario
+- [ ] **Roles granulares** - Permisos por recurso y por usuario
 - [ ] **ARM emulation** - Raspberry Pi OS, Android ARM
 - [ ] **API de backups** - Backups automaticos programados
 - [ ] **Importar/Exportar** - OVA, VMDK, VHD
 - [ ] **USB Passthrough desde web** - Redirigir dispositivos USB
+- [ ] **Metricas historicas** - Graficos con Chart.js y almacenamiento en SQLite
 
 ## Contribuir
 

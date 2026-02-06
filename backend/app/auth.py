@@ -113,6 +113,46 @@ def authenticate_user(username: str, password: str) -> Optional[User]:
     return user
 
 
+def create_user(username: str, password: str, is_admin: bool = False) -> User:
+    """Create a new user"""
+    users = load_users()
+    if username in users:
+        raise ValueError(f"User '{username}' already exists")
+    users[username] = {
+        "username": username,
+        "hashed_password": hash_password(password),
+        "is_admin": is_admin
+    }
+    save_users(users)
+    return User(**users[username])
+
+
+def delete_user(username: str) -> bool:
+    """Delete a user"""
+    users = load_users()
+    if username not in users:
+        raise ValueError(f"User '{username}' not found")
+    del users[username]
+    save_users(users)
+    return True
+
+
+def change_password(username: str, new_password: str) -> bool:
+    """Change a user's password"""
+    users = load_users()
+    if username not in users:
+        raise ValueError(f"User '{username}' not found")
+    users[username]["hashed_password"] = hash_password(new_password)
+    save_users(users)
+    return True
+
+
+def list_users() -> list:
+    """List all users (without password hashes)"""
+    users = load_users()
+    return [{"username": u["username"], "is_admin": u.get("is_admin", False)} for u in users.values()]
+
+
 def create_default_user():
     """Create default admin user if no users exist"""
     users = load_users()

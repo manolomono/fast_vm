@@ -9,14 +9,18 @@ from .models import (
     VMCreate, VMInfo, VMResponse, VNCConnectionInfo, SpiceConnectionInfo, VMUpdate,
     Volume, VolumeCreate, VolumeResponse,
     Snapshot, SnapshotCreate, SnapshotResponse,
-    LoginRequest, Token, UserInfo
+    LoginRequest, Token, UserInfo,
+    ChangePasswordRequest, CreateUserRequest
 )
 from .vm_manager import VMManager
 from .auth import (
     authenticate_user, create_access_token, get_current_user,
-    create_default_user, UserInfo as AuthUserInfo
+    create_default_user, UserInfo as AuthUserInfo,
+    verify_password, get_user, change_password,
+    create_user, delete_user, list_users
 )
 import asyncio
+import psutil
 from datetime import timedelta
 
 app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0")
@@ -94,6 +98,53 @@ async def logout():
 async def get_me(current_user: AuthUserInfo = Depends(get_current_user)):
     """Get current authenticated user info"""
     return UserInfo(username=current_user.username, is_admin=current_user.is_admin)
+
+
+@app.post("/api/auth/change-password")
+async def change_user_password(data: ChangePasswordRequest, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Change current user's password"""
+    user = get_user(current_user.username)
+    if not user or not verify_password(data.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    try:
+        change_password(current_user.username, data.new_password)
+        return {"success": True, "message": "Password changed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/auth/users")
+async def get_users(current_user: AuthUserInfo = Depends(get_current_user)):
+    """List all users (admin only)"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return list_users()
+
+
+@app.post("/api/auth/users")
+async def create_new_user(data: CreateUserRequest, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Create a new user (admin only)"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        create_user(data.username, data.password, data.is_admin)
+        return {"success": True, "message": f"User '{data.username}' created successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/auth/users/{username}")
+async def remove_user(username: str, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Delete a user (admin only, cannot delete self)"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if username == current_user.username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    try:
+        delete_user(username)
+        return {"success": True, "message": f"User '{username}' deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/health")
@@ -323,6 +374,39 @@ async def get_system_user(current_user: AuthUserInfo = Depends(get_current_user)
     """Get the current system user running the backend"""
     import getpass
     return {"username": getpass.getuser()}
+
+
+@app.get("/api/vms/{vm_id}/metrics")
+async def get_vm_metrics(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get real-time metrics for a running VM (CPU%, RAM, I/O)"""
+    try:
+        metrics = vm_manager.get_vm_metrics(vm_id)
+        return metrics
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/system/metrics")
+async def get_system_metrics(current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get host system metrics (CPU, RAM, disk)"""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        return {
+            "cpu_percent": cpu_percent,
+            "cpu_count": psutil.cpu_count(),
+            "memory_total_gb": round(mem.total / (1024**3), 1),
+            "memory_used_gb": round(mem.used / (1024**3), 1),
+            "memory_percent": mem.percent,
+            "disk_total_gb": round(disk.total / (1024**3), 1),
+            "disk_used_gb": round(disk.used / (1024**3), 1),
+            "disk_percent": round(disk.percent, 1)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
