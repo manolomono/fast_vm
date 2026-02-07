@@ -22,9 +22,17 @@ from .auth import (
 )
 import asyncio
 import psutil
-from datetime import timedelta
+from datetime import timedelta, datetime
+from collections import deque
 
 app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0")
+
+# Metrics history buffer (keeps last 60 data points = 10 minutes at 10s intervals)
+METRICS_HISTORY_SIZE = 60
+metrics_history = {
+    "host": deque(maxlen=METRICS_HISTORY_SIZE),
+    "vms": {}  # vm_id -> deque of metrics
+}
 
 # Enable CORS
 app.add_middleware(
@@ -445,6 +453,89 @@ async def get_system_metrics(current_user: AuthUserInfo = Depends(get_current_us
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/metrics/history")
+async def get_metrics_history(current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get metrics history for charts (host + all VMs)"""
+    return {
+        "host": list(metrics_history["host"]),
+        "vms": {vm_id: list(points) for vm_id, points in metrics_history["vms"].items()}
+    }
+
+
+@app.get("/api/vms/{vm_id}/metrics/history")
+async def get_vm_metrics_history(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get metrics history for a specific VM"""
+    if vm_id not in metrics_history["vms"]:
+        return {"points": []}
+    return {"points": list(metrics_history["vms"][vm_id])}
+
+
+async def collect_metrics_task():
+    """Background task to collect metrics every 10 seconds"""
+    while True:
+        try:
+            # Host metrics
+            cpu_percent = psutil.cpu_percent(interval=0.5)
+            mem = psutil.virtual_memory()
+            timestamp = datetime.utcnow().isoformat()
+
+            metrics_history["host"].append({
+                "t": timestamp,
+                "cpu": round(cpu_percent, 1),
+                "mem": round(mem.percent, 1),
+            })
+
+            # VM metrics
+            for vm_id, vm in vm_manager.vms.items():
+                if vm.get('status') != 'running' or not vm.get('pid'):
+                    continue
+                try:
+                    proc = psutil.Process(vm['pid'])
+                    cpu = proc.cpu_percent(interval=0.1)
+                    mem_info = proc.memory_info()
+                    mem_mb = mem_info.rss / (1024 * 1024)
+                    configured_mb = vm.get('memory', 1)
+
+                    try:
+                        io = proc.io_counters()
+                        io_read = round(io.read_bytes / (1024 * 1024), 1)
+                        io_write = round(io.write_bytes / (1024 * 1024), 1)
+                    except (psutil.AccessDenied, AttributeError):
+                        io_read = 0
+                        io_write = 0
+
+                    if vm_id not in metrics_history["vms"]:
+                        metrics_history["vms"][vm_id] = deque(maxlen=METRICS_HISTORY_SIZE)
+
+                    metrics_history["vms"][vm_id].append({
+                        "t": timestamp,
+                        "cpu": round(cpu, 1),
+                        "mem_mb": round(mem_mb, 1),
+                        "mem_pct": round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0,
+                        "io_r": io_read,
+                        "io_w": io_write,
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+            # Cleanup VMs that are no longer running
+            active_ids = {vm_id for vm_id, vm in vm_manager.vms.items() if vm.get('status') == 'running'}
+            for vm_id in list(metrics_history["vms"].keys()):
+                if vm_id not in active_ids:
+                    del metrics_history["vms"][vm_id]
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(10)
+
+
+@app.on_event("startup")
+async def start_metrics_collector():
+    """Start metrics collection background task"""
+    asyncio.create_task(collect_metrics_task())
 
 
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)

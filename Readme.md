@@ -81,6 +81,22 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 - **Modelos de CPU** - host, qemu64, max, Skylake-Client, EPYC
 - **Display QXL** - Optimizado para SPICE con 64MB de VRAM
 
+### Monitorizacion con Graficos
+- **Chart.js** - Graficos de linea en tiempo real para CPU, RAM e I/O
+- **Vista de Monitoring** - Seccion dedicada accesible desde el sidebar
+- **Metricas del host** - Graficos de CPU% y uso de memoria del servidor
+- **Metricas por VM** - Graficos individuales de CPU%, RAM y I/O de disco por VM
+- **Historial** - Buffer circular de 10 minutos (recoleccion cada 10 segundos)
+- **Endpoints de historial** - `/api/metrics/history` y `/api/vms/{id}/metrics/history`
+
+### Testing
+- **31 tests** - Suite completa con pytest + pytest-asyncio
+- **Tests de auth** (12) - Login, logout, permisos, cambio de contrasena, gestion de usuarios
+- **Tests de API** (15) - CRUD de VMs, volumes, clone, cloud-init, metricas, ISOs
+- **Tests de integracion** (4) - Ciclo de vida completo de VM, volumes, usuarios y multi-VM
+- **Fixtures aislados** - Cada test usa directorios temporales independientes
+- **Ejecutar tests:** `cd backend && python -m pytest tests/ -v`
+
 ## Stack Tecnologico
 
 | Componente | Tecnologia |
@@ -91,6 +107,8 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 | Virtualizacion | QEMU/KVM |
 | Display remoto | SPICE (spice-html5) |
 | WebSocket proxy | websockify |
+| Graficos | Chart.js |
+| Testing | pytest + pytest-asyncio + httpx |
 | Modelos | Pydantic v2 |
 
 ## Sistemas Operativos Soportados
@@ -253,7 +271,9 @@ Todos los endpoints (excepto login) requieren header `Authorization: Bearer <tok
 
 ### Metricas
 - `GET /api/vms/{vm_id}/metrics` - Metricas en tiempo real de una VM (CPU%, RAM, I/O)
+- `GET /api/vms/{vm_id}/metrics/history` - Historial de metricas de una VM
 - `GET /api/system/metrics` - Metricas del host (CPU, RAM, disco)
+- `GET /api/metrics/history` - Historial de metricas del host y VMs
 
 ### Sistema
 - `GET /api/health` - Health check
@@ -312,8 +332,14 @@ fast_vm/
 │   │   ├── vm_manager.py     # Gestor de VMs con QEMU
 │   │   ├── spice_proxy.py    # Proxy WebSocket para SPICE
 │   │   └── vnc_proxy.py      # Proxy VNC (legacy)
+│   ├── tests/
+│   │   ├── conftest.py         # Fixtures compartidos (temp dirs, client, auth)
+│   │   ├── test_auth.py        # Tests de autenticacion (12 tests)
+│   │   ├── test_api.py         # Tests de API: VMs, volumes, metricas (15 tests)
+│   │   └── test_integration.py # Tests de integracion (4 flujos completos)
 │   ├── requirements.txt
-│   └── users.json            # Base de datos de usuarios
+│   ├── pytest.ini              # Configuracion de pytest
+│   └── users.json              # Base de datos de usuarios
 ├── frontend/
 │   ├── index.html            # Dashboard principal (TailwindCSS + Alpine.js)
 │   ├── login.html            # Pagina de login
@@ -441,6 +467,11 @@ sudo systemctl restart spice-vdagent
 - [x] Auto-refresh del dashboard
 - [x] Logs de VM (QEMU + serial)
 
+- [x] Graficos de monitorizacion con Chart.js (CPU, RAM, I/O por VM)
+- [x] Historial de metricas (buffer circular de 10 minutos)
+- [x] Tests unitarios de la API (auth, VMs, volumes, cloud-init, metricas)
+- [x] Tests de integracion (flujos completos de usuario)
+
 ### Planificado
 - [ ] **GPU Passthrough** - Para gaming y ML
 - [ ] **Migracion en vivo** - Mover VMs entre hosts
@@ -450,7 +481,6 @@ sudo systemctl restart spice-vdagent
 - [ ] **API de backups** - Backups automaticos programados
 - [ ] **Importar/Exportar** - OVA, VMDK, VHD
 - [ ] **USB Passthrough desde web** - Redirigir dispositivos USB
-- [ ] **Metricas historicas** - Graficos con Chart.js y almacenamiento en SQLite
 
 ## Contribuir
 

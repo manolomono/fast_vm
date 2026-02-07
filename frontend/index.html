@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fast VM - Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script>
         tailwind.config = {
@@ -72,6 +73,10 @@
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path></svg>
                     <span>Volumes</span>
                 </button>
+                <button @click="currentView = 'monitoring'; loadMonitoringCharts()" :class="currentView === 'monitoring' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700/50'" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    <span>Monitoring</span>
+                </button>
                 <button x-show="user?.is_admin" @click="currentView = 'users'" :class="currentView === 'users' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700/50'" class="w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                     <span>Users</span>
@@ -118,7 +123,7 @@
             <!-- Header -->
             <header class="bg-slate-800 border-b border-slate-700 px-6 py-4 flex items-center justify-between flex-shrink-0">
                 <div>
-                    <h2 class="text-xl font-semibold" x-text="currentView === 'dashboard' ? 'Dashboard' : currentView === 'volumes' ? 'Volumes' : currentView === 'users' ? 'User Management' : 'Fast VM'"></h2>
+                    <h2 class="text-xl font-semibold" x-text="currentView === 'dashboard' ? 'Dashboard' : currentView === 'volumes' ? 'Volumes' : currentView === 'users' ? 'User Management' : currentView === 'monitoring' ? 'Monitoring' : 'Fast VM'"></h2>
                 </div>
                 <div class="flex items-center space-x-3">
                     <button @click="loadVMs()" class="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors" title="Actualizar">
@@ -329,6 +334,48 @@
                             </template>
                             <p x-show="volumes.length === 0" class="text-slate-500 col-span-full text-center py-12">No hay volúmenes.</p>
                         </div>
+                    </div>
+
+                    <!-- Monitoring View -->
+                    <div x-show="currentView === 'monitoring'">
+                        <!-- Host Charts -->
+                        <h3 class="text-lg font-semibold mb-4">Host System</h3>
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+                            <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                <h4 class="text-sm text-slate-400 mb-2">CPU Usage (%)</h4>
+                                <canvas id="chartHostCpu" height="180"></canvas>
+                            </div>
+                            <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                <h4 class="text-sm text-slate-400 mb-2">Memory Usage (%)</h4>
+                                <canvas id="chartHostMem" height="180"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Per-VM Charts -->
+                        <template x-for="vm in vms.filter(v => v.status === 'running')" :key="vm.id">
+                            <div class="mb-6">
+                                <h3 class="text-lg font-semibold mb-4 flex items-center space-x-2">
+                                    <span class="w-2 h-2 bg-emerald-500 rounded-full"></span>
+                                    <span x-text="vm.name"></span>
+                                </h3>
+                                <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                        <h4 class="text-sm text-slate-400 mb-2">CPU (%)</h4>
+                                        <canvas :id="'chartVmCpu_' + vm.id" height="160"></canvas>
+                                    </div>
+                                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                        <h4 class="text-sm text-slate-400 mb-2">Memory (MB)</h4>
+                                        <canvas :id="'chartVmMem_' + vm.id" height="160"></canvas>
+                                    </div>
+                                    <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                                        <h4 class="text-sm text-slate-400 mb-2">Disk I/O (MB)</h4>
+                                        <canvas :id="'chartVmIo_' + vm.id" height="160"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <p x-show="vms.filter(v => v.status === 'running').length === 0" class="text-slate-500 text-center py-8">No hay VMs running. Inicia una VM para ver sus graficas.</p>
                     </div>
 
                     <!-- Users View -->

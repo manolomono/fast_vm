@@ -272,6 +272,129 @@ function dashboard() {
             }
         },
 
+        // Monitoring charts
+        charts: {},
+        monitoringInterval: null,
+
+        async loadMonitoringCharts() {
+            // Small delay to ensure DOM is ready
+            await new Promise(r => setTimeout(r, 100));
+
+            try {
+                const data = await api('/metrics/history');
+                this.renderHostCharts(data.host);
+                this.renderVmCharts(data.vms);
+            } catch (err) {
+                console.error('Error loading monitoring data:', err);
+            }
+
+            // Auto-refresh charts every 10s
+            if (this.monitoringInterval) clearInterval(this.monitoringInterval);
+            this.monitoringInterval = setInterval(async () => {
+                if (this.currentView !== 'monitoring') {
+                    clearInterval(this.monitoringInterval);
+                    this.monitoringInterval = null;
+                    return;
+                }
+                try {
+                    const data = await api('/metrics/history');
+                    this.renderHostCharts(data.host);
+                    this.renderVmCharts(data.vms);
+                } catch (err) { /* ignore */ }
+            }, 10000);
+        },
+
+        chartDefaults() {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 300 },
+                scales: {
+                    x: { display: true, ticks: { maxTicksLimit: 8, color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } },
+                    y: { display: true, beginAtZero: true, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } }
+                },
+                plugins: { legend: { display: false } }
+            };
+        },
+
+        renderChart(canvasId, labels, datasets, opts = {}) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+
+            // Destroy existing chart
+            if (this.charts[canvasId]) {
+                this.charts[canvasId].destroy();
+            }
+
+            const defaults = this.chartDefaults();
+            if (opts.yMax) defaults.scales.y.max = opts.yMax;
+            if (opts.legend) defaults.plugins.legend = { display: true, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 11 } } };
+
+            this.charts[canvasId] = new Chart(canvas, {
+                type: 'line',
+                data: { labels, datasets },
+                options: defaults
+            });
+        },
+
+        formatTime(iso) {
+            if (!iso) return '';
+            const d = new Date(iso + 'Z');
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        },
+
+        renderHostCharts(hostData) {
+            if (!hostData || hostData.length === 0) return;
+            const labels = hostData.map(p => this.formatTime(p.t));
+
+            this.renderChart('chartHostCpu', labels, [{
+                data: hostData.map(p => p.cpu),
+                borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)',
+                fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+            }], { yMax: 100 });
+
+            this.renderChart('chartHostMem', labels, [{
+                data: hostData.map(p => p.mem),
+                borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)',
+                fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+            }], { yMax: 100 });
+        },
+
+        renderVmCharts(vmsData) {
+            if (!vmsData) return;
+            for (const [vmId, points] of Object.entries(vmsData)) {
+                if (!points || points.length === 0) continue;
+                const labels = points.map(p => this.formatTime(p.t));
+
+                this.renderChart('chartVmCpu_' + vmId, labels, [{
+                    data: points.map(p => p.cpu),
+                    borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)',
+                    fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+                }]);
+
+                this.renderChart('chartVmMem_' + vmId, labels, [{
+                    data: points.map(p => p.mem_mb),
+                    borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)',
+                    fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+                }]);
+
+                this.renderChart('chartVmIo_' + vmId, labels, [
+                    {
+                        label: 'Read',
+                        data: points.map(p => p.io_r),
+                        borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.1)',
+                        fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+                    },
+                    {
+                        label: 'Write',
+                        data: points.map(p => p.io_w),
+                        borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)',
+                        fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
+                    }
+                ], { legend: true });
+            }
+        },
+
         // Clone
         openCloneModal(vm) {
             this.cloneSource = vm;
