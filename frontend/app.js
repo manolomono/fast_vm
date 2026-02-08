@@ -320,7 +320,7 @@ function dashboard() {
 
         destroyAllCharts() {
             for (const [id, chart] of Object.entries(this.charts)) {
-                chart.destroy();
+                try { chart.destroy(); } catch(e) {}
             }
             this.charts = {};
         },
@@ -465,6 +465,7 @@ function dashboard() {
         },
 
         async _fetchAndRenderCharts() {
+            if (this.currentView !== 'monitoring') return;
             try {
                 const data = await api('/metrics/history');
 
@@ -507,35 +508,54 @@ function dashboard() {
 
         renderChart(canvasId, labels, datasets, opts = {}) {
             const canvas = document.getElementById(canvasId);
-            if (!canvas) return;
+            if (!canvas || !canvas.getContext) return;
+
+            // Check canvas is actually in the visible DOM with dimensions
+            const ctx = canvas.getContext('2d');
+            if (!ctx || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
 
             // Update existing chart data instead of destroying/recreating
             if (this.charts[canvasId]) {
                 const chart = this.charts[canvasId];
-                chart.data.labels = labels;
-                datasets.forEach((ds, i) => {
-                    if (chart.data.datasets[i]) {
-                        chart.data.datasets[i].data = ds.data;
-                    }
-                });
-                chart.update('none');
-                return;
+                // Verify the chart's canvas is still in the DOM
+                if (!chart.canvas || !chart.canvas.isConnected) {
+                    chart.destroy();
+                    delete this.charts[canvasId];
+                } else {
+                    chart.data.labels = labels;
+                    datasets.forEach((ds, i) => {
+                        if (chart.data.datasets[i]) {
+                            chart.data.datasets[i].data = ds.data;
+                        } else {
+                            chart.data.datasets[i] = ds;
+                        }
+                    });
+                    // Remove extra datasets if fewer now
+                    chart.data.datasets.length = datasets.length;
+                    chart.update('none');
+                    return;
+                }
             }
 
             const defaults = this.chartDefaults();
             if (opts.yMax) defaults.scales.y.max = opts.yMax;
             if (opts.legend) defaults.plugins.legend = { display: true, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 11 } } };
 
-            this.charts[canvasId] = new Chart(canvas, {
-                type: 'line',
-                data: { labels, datasets },
-                options: defaults
-            });
+            try {
+                this.charts[canvasId] = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels, datasets },
+                    options: defaults
+                });
+            } catch (err) {
+                console.warn('Chart creation failed for', canvasId, err);
+            }
         },
 
         formatTime(iso) {
             if (!iso) return '';
-            const d = new Date(iso + 'Z');
+            // Handle both naive (no tz) and aware (with +00:00 or Z) timestamps
+            const d = new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         },
 
