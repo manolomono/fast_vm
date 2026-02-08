@@ -620,8 +620,9 @@ async def get_extended_metrics_history(hours: int = 24, vm_id: Optional[str] = N
 
 async def collect_metrics_task():
     """Background task to collect metrics every 10 seconds"""
-    # Keep Process objects to get accurate cpu_percent across ticks
+    # Keep Process objects + previous I/O for delta calculation
     vm_procs: dict[str, psutil.Process] = {}
+    vm_prev_io: dict[str, tuple] = {}
 
     while True:
         try:
@@ -651,23 +652,40 @@ async def collect_metrics_task():
                 try:
                     pid = vm['pid']
                     if vm_id not in vm_procs or vm_procs[vm_id].pid != pid:
-                        vm_procs[vm_id] = psutil.Process(pid)
-                        vm_procs[vm_id].cpu_percent(interval=0)  # prime baseline
+                        proc = psutil.Process(pid)
+                        vm_procs[vm_id] = proc
+                        proc.cpu_percent(interval=0)  # prime CPU baseline
+                        try:
+                            io = proc.io_counters()
+                            vm_prev_io[vm_id] = (io.read_bytes, io.write_bytes)
+                        except (psutil.AccessDenied, AttributeError):
+                            vm_prev_io[vm_id] = (0, 0)
                         continue  # skip this tick
 
                     proc = vm_procs[vm_id]
+                    # CPU: sum parent + children for full QEMU usage
                     cpu = proc.cpu_percent(interval=0)
+                    try:
+                        for child in proc.children(recursive=True):
+                            cpu += child.cpu_percent(interval=0)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
                     mem_info = proc.memory_info()
                     mem_mb = mem_info.rss / (1024 * 1024)
                     configured_mb = vm.get('memory', 1)
 
+                    # I/O: compute delta (MB since last tick)
+                    io_read = 0.0
+                    io_write = 0.0
                     try:
                         io = proc.io_counters()
-                        io_read = round(io.read_bytes / (1024 * 1024), 1)
-                        io_write = round(io.write_bytes / (1024 * 1024), 1)
+                        prev_r, prev_w = vm_prev_io.get(vm_id, (io.read_bytes, io.write_bytes))
+                        io_read = round(max(io.read_bytes - prev_r, 0) / (1024 * 1024), 2)
+                        io_write = round(max(io.write_bytes - prev_w, 0) / (1024 * 1024), 2)
+                        vm_prev_io[vm_id] = (io.read_bytes, io.write_bytes)
                     except (psutil.AccessDenied, AttributeError):
-                        io_read = 0
-                        io_write = 0
+                        pass
 
                     if vm_id not in metrics_history["vms"]:
                         metrics_history["vms"][vm_id] = deque(maxlen=METRICS_HISTORY_SIZE)
@@ -689,6 +707,7 @@ async def collect_metrics_task():
                     save_vm_metrics(timestamp, vm_id, vm_cpu, vm_mem_mb, vm_mem_pct, io_read, io_write)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     vm_procs.pop(vm_id, None)
+                    vm_prev_io.pop(vm_id, None)
                     continue
 
             # Cleanup VMs that are no longer running
@@ -698,6 +717,7 @@ async def collect_metrics_task():
             for vm_id in list(vm_procs):
                 if vm_id not in active_ids:
                     del vm_procs[vm_id]
+                    vm_prev_io.pop(vm_id, None)
 
             # Periodic cleanup of old metrics from SQLite (every collection cycle)
             cleanup_old_metrics(24)
@@ -902,8 +922,9 @@ async def websocket_metrics(websocket: WebSocket):
 
     receive_task = asyncio.create_task(_receive_loop())
 
-    # Keep Process objects between iterations so cpu_percent has a baseline
+    # Keep Process objects + previous I/O counters between iterations
     vm_procs: dict[str, psutil.Process] = {}
+    vm_prev_io: dict[str, tuple] = {}  # vid -> (read_bytes, write_bytes)
 
     try:
         while not receive_task.done():
@@ -931,21 +952,43 @@ async def websocket_metrics(websocket: WebSocket):
                         # Reuse Process object for accurate cpu_percent
                         pid = vm['pid']
                         if vid not in vm_procs or vm_procs[vid].pid != pid:
-                            vm_procs[vid] = psutil.Process(pid)
-                            vm_procs[vid].cpu_percent(interval=0)  # prime the baseline
-                            continue  # skip this tick, next one will have real data
+                            proc = psutil.Process(pid)
+                            vm_procs[vid] = proc
+                            proc.cpu_percent(interval=0)  # prime CPU baseline
+                            # Prime I/O baseline
+                            try:
+                                io = proc.io_counters()
+                                vm_prev_io[vid] = (io.read_bytes, io.write_bytes)
+                            except (psutil.AccessDenied, AttributeError):
+                                vm_prev_io[vid] = (0, 0)
+                            continue  # skip this tick, next one will have real deltas
 
                         proc = vm_procs[vid]
+                        # CPU: sum parent + children for full QEMU usage
                         cpu = proc.cpu_percent(interval=0)
+                        try:
+                            for child in proc.children(recursive=True):
+                                cpu += child.cpu_percent(interval=0)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+
                         mem_info = proc.memory_info()
                         mem_mb = mem_info.rss / (1024 * 1024)
                         configured_mb = vm.get('memory', 1)
+
+                        # I/O: compute delta (MB/s rate over 2s interval)
+                        io_r = 0.0
+                        io_w = 0.0
                         try:
                             io = proc.io_counters()
-                            io_r = round(io.read_bytes / (1024 * 1024), 1)
-                            io_w = round(io.write_bytes / (1024 * 1024), 1)
+                            prev_r, prev_w = vm_prev_io.get(vid, (io.read_bytes, io.write_bytes))
+                            delta_r = io.read_bytes - prev_r
+                            delta_w = io.write_bytes - prev_w
+                            io_r = round(max(delta_r, 0) / (1024 * 1024), 2)  # MB in last 2s
+                            io_w = round(max(delta_w, 0) / (1024 * 1024), 2)
+                            vm_prev_io[vid] = (io.read_bytes, io.write_bytes)
                         except (psutil.AccessDenied, AttributeError):
-                            io_r = io_w = 0
+                            pass
 
                         payload["vms"][vid] = {
                             "t": timestamp,
@@ -957,12 +1000,14 @@ async def websocket_metrics(websocket: WebSocket):
                         }
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         vm_procs.pop(vid, None)
+                        vm_prev_io.pop(vid, None)
                         continue
 
                 # Cleanup stale process refs
                 for vid in list(vm_procs):
                     if vid not in active_vids:
                         del vm_procs[vid]
+                        vm_prev_io.pop(vid, None)
 
                 await websocket.send_json(payload)
             except (WebSocketDisconnect, ConnectionError):
