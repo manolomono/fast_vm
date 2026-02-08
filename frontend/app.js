@@ -89,7 +89,7 @@ function dashboard() {
         showCloneModal: false,
         showCloudInitModal: false,
         deleteTarget: null,
-        editTarget: null,
+        editTarget: { memory: 0, cpus: 0, iso_path: '', secondary_iso_path: '', networks: [], volumes: [], boot_order: ['disk', 'cdrom'] },
         selectedVolumeToAttach: '',
 
         // Form data
@@ -506,32 +506,38 @@ function dashboard() {
             };
         },
 
+        // Strip Alpine.js Proxy wrappers so Chart.js doesn't infinite-recurse
+        _rawCopy(obj) {
+            try { return JSON.parse(JSON.stringify(obj)); } catch { return obj; }
+        },
+
         renderChart(canvasId, labels, datasets, opts = {}) {
             const canvas = document.getElementById(canvasId);
             if (!canvas || !canvas.getContext) return;
 
-            // Check canvas is actually in the visible DOM with dimensions
             const ctx = canvas.getContext('2d');
             if (!ctx || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
+
+            // Strip Alpine proxies from data to prevent Chart.js stack overflow
+            const rawLabels = this._rawCopy(labels);
+            const rawDatasets = this._rawCopy(datasets);
 
             // Update existing chart data instead of destroying/recreating
             if (this.charts[canvasId]) {
                 const chart = this.charts[canvasId];
-                // Verify the chart's canvas is still in the DOM
                 if (!chart.canvas || !chart.canvas.isConnected) {
                     chart.destroy();
                     delete this.charts[canvasId];
                 } else {
-                    chart.data.labels = labels;
-                    datasets.forEach((ds, i) => {
+                    chart.data.labels = rawLabels;
+                    rawDatasets.forEach((ds, i) => {
                         if (chart.data.datasets[i]) {
                             chart.data.datasets[i].data = ds.data;
                         } else {
                             chart.data.datasets[i] = ds;
                         }
                     });
-                    // Remove extra datasets if fewer now
-                    chart.data.datasets.length = datasets.length;
+                    chart.data.datasets.length = rawDatasets.length;
                     chart.update('none');
                     return;
                 }
@@ -544,7 +550,7 @@ function dashboard() {
             try {
                 this.charts[canvasId] = new Chart(ctx, {
                     type: 'line',
-                    data: { labels, datasets },
+                    data: { labels: rawLabels, datasets: rawDatasets },
                     options: defaults
                 });
             } catch (err) {
