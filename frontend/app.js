@@ -62,7 +62,7 @@ function dashboard() {
 
         // Metrics
         vmMetrics: {},
-        hostMetrics: null,
+        hostMetrics: { cpu_percent: 0, cpu_count: 0, memory_used_gb: 0, memory_total_gb: 0, memory_percent: 0, disk_used_gb: 0, disk_total_gb: 0, disk_percent: 0 },
 
         // Users
         users: [],
