@@ -44,6 +44,19 @@ function dashboard() {
         consoleVm: null,
         consoleUrl: '',
 
+        // VM Search & Filter
+        vmSearchQuery: '',
+        vmStatusFilter: 'all',
+
+        // Audit Logs
+        auditLogs: [],
+        auditTotal: 0,
+        auditPage: 0,
+
+        // Backups
+        backups: [],
+        showRestoreModal: false,
+
         // Metrics
         vmMetrics: {},
         hostMetrics: null,
@@ -105,6 +118,13 @@ function dashboard() {
         },
         get stoppedVMs() {
             return this.vms.filter(v => v.status !== 'running').length;
+        },
+        get filteredVMs() {
+            return this.vms.filter(vm => {
+                const matchesSearch = !this.vmSearchQuery || vm.name.toLowerCase().includes(this.vmSearchQuery.toLowerCase());
+                const matchesStatus = this.vmStatusFilter === 'all' || vm.status === this.vmStatusFilter;
+                return matchesSearch && matchesStatus;
+            });
         },
         get availableVolumes() {
             if (!this.editTarget) return [];
@@ -275,33 +295,201 @@ function dashboard() {
         // Monitoring charts
         charts: {},
         monitoringInterval: null,
+        monitoringVmId: null, // null = show all, string = single VM
+        metricsWs: null,
+        metricsWsConnected: false,
+
+        // Ring buffers for WebSocket data (keep last 60 points = ~2 min at 2s)
+        wsHostHistory: [],
+        wsVmHistory: {},
+        WS_MAX_POINTS: 60,
+
+        openVmMonitoring(vm) {
+            this.monitoringVmId = vm.id;
+            this.destroyAllCharts();
+            this.currentView = 'monitoring';
+            this.loadMonitoringCharts();
+        },
+
+        openAllMonitoring() {
+            this.monitoringVmId = null;
+            this.destroyAllCharts();
+            this.currentView = 'monitoring';
+            this.loadMonitoringCharts();
+        },
+
+        destroyAllCharts() {
+            for (const [id, chart] of Object.entries(this.charts)) {
+                chart.destroy();
+            }
+            this.charts = {};
+        },
+
+        stopMonitoring() {
+            if (this.monitoringInterval) {
+                clearInterval(this.monitoringInterval);
+                this.monitoringInterval = null;
+            }
+            if (this.metricsWs) {
+                this.metricsWs.close();
+                this.metricsWs = null;
+                this.metricsWsConnected = false;
+            }
+            this.destroyAllCharts();
+        },
 
         async loadMonitoringCharts() {
             // Small delay to ensure DOM is ready
-            await new Promise(r => setTimeout(r, 100));
+            await new Promise(r => setTimeout(r, 150));
+
+            // Load initial history from REST API
+            await this._fetchAndRenderCharts();
+
+            // Try WebSocket for real-time updates
+            this._connectMetricsWs();
+        },
+
+        _connectMetricsWs() {
+            // Clean up previous
+            if (this.metricsWs) {
+                this.metricsWs.close();
+                this.metricsWs = null;
+            }
+            if (this.monitoringInterval) {
+                clearInterval(this.monitoringInterval);
+                this.monitoringInterval = null;
+            }
+
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${location.host}/ws/metrics`;
 
             try {
+                this.metricsWs = new WebSocket(wsUrl);
+
+                this.metricsWs.onopen = () => {
+                    console.log('Metrics WebSocket connected');
+                    this.metricsWsConnected = true;
+                };
+
+                this.metricsWs.onmessage = (event) => {
+                    if (this.currentView !== 'monitoring') {
+                        this.stopMonitoring();
+                        return;
+                    }
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'metrics') {
+                            this._handleWsMetrics(data);
+                        }
+                    } catch (err) {
+                        console.error('WS parse error:', err);
+                    }
+                };
+
+                this.metricsWs.onclose = () => {
+                    this.metricsWsConnected = false;
+                    // Fallback to polling if WS dies and still on monitoring view
+                    if (this.currentView === 'monitoring') {
+                        console.log('WebSocket closed, falling back to polling');
+                        this._startPollingFallback();
+                    }
+                };
+
+                this.metricsWs.onerror = () => {
+                    this.metricsWsConnected = false;
+                };
+            } catch (err) {
+                console.error('WebSocket error:', err);
+                this._startPollingFallback();
+            }
+        },
+
+        _startPollingFallback() {
+            if (this.monitoringInterval) return;
+            this.monitoringInterval = setInterval(async () => {
+                if (this.currentView !== 'monitoring') {
+                    this.stopMonitoring();
+                    return;
+                }
+                await this._fetchAndRenderCharts();
+            }, 5000);
+        },
+
+        _handleWsMetrics(data) {
+            // Append to host history
+            if (data.host) {
+                this.wsHostHistory.push(data.host);
+                if (this.wsHostHistory.length > this.WS_MAX_POINTS) {
+                    this.wsHostHistory.shift();
+                }
+            }
+
+            // Append to VM histories
+            for (const [vmId, point] of Object.entries(data.vms || {})) {
+                if (!this.wsVmHistory[vmId]) this.wsVmHistory[vmId] = [];
+                this.wsVmHistory[vmId].push(point);
+                if (this.wsVmHistory[vmId].length > this.WS_MAX_POINTS) {
+                    this.wsVmHistory[vmId].shift();
+                }
+            }
+
+            // Clean up VMs no longer present
+            for (const vmId of Object.keys(this.wsVmHistory)) {
+                if (!data.vms || !(vmId in data.vms)) {
+                    delete this.wsVmHistory[vmId];
+                }
+            }
+
+            // Also update vmMetrics for the live stats cards
+            for (const [vmId, point] of Object.entries(data.vms || {})) {
+                this.vmMetrics[vmId] = {
+                    cpu_percent: point.cpu,
+                    memory_used_mb: point.mem_mb,
+                    memory_percent: point.mem_pct,
+                    io_read_mb: point.io_r,
+                    io_write_mb: point.io_w,
+                };
+            }
+
+            // Render
+            if (!this.monitoringVmId) {
+                this.renderHostCharts(this.wsHostHistory);
+                this.renderVmCharts(this.wsVmHistory);
+            } else {
+                const vmData = {};
+                if (this.wsVmHistory[this.monitoringVmId]) {
+                    vmData[this.monitoringVmId] = this.wsVmHistory[this.monitoringVmId];
+                }
+                this.renderVmCharts(vmData);
+            }
+        },
+
+        async _fetchAndRenderCharts() {
+            try {
                 const data = await api('/metrics/history');
-                this.renderHostCharts(data.host);
-                this.renderVmCharts(data.vms);
+
+                // Seed WS buffers from REST history
+                if (data.host) this.wsHostHistory = [...data.host];
+                if (data.vms) {
+                    this.wsVmHistory = {};
+                    for (const [vmId, points] of Object.entries(data.vms)) {
+                        this.wsVmHistory[vmId] = [...points];
+                    }
+                }
+
+                if (!this.monitoringVmId) {
+                    this.renderHostCharts(data.host);
+                    this.renderVmCharts(data.vms);
+                } else {
+                    const vmData = {};
+                    if (data.vms[this.monitoringVmId]) {
+                        vmData[this.monitoringVmId] = data.vms[this.monitoringVmId];
+                    }
+                    this.renderVmCharts(vmData);
+                }
             } catch (err) {
                 console.error('Error loading monitoring data:', err);
             }
-
-            // Auto-refresh charts every 10s
-            if (this.monitoringInterval) clearInterval(this.monitoringInterval);
-            this.monitoringInterval = setInterval(async () => {
-                if (this.currentView !== 'monitoring') {
-                    clearInterval(this.monitoringInterval);
-                    this.monitoringInterval = null;
-                    return;
-                }
-                try {
-                    const data = await api('/metrics/history');
-                    this.renderHostCharts(data.host);
-                    this.renderVmCharts(data.vms);
-                } catch (err) { /* ignore */ }
-            }, 10000);
         },
 
         chartDefaults() {
@@ -321,9 +509,17 @@ function dashboard() {
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
 
-            // Destroy existing chart
+            // Update existing chart data instead of destroying/recreating
             if (this.charts[canvasId]) {
-                this.charts[canvasId].destroy();
+                const chart = this.charts[canvasId];
+                chart.data.labels = labels;
+                datasets.forEach((ds, i) => {
+                    if (chart.data.datasets[i]) {
+                        chart.data.datasets[i].data = ds.data;
+                    }
+                });
+                chart.update('none');
+                return;
             }
 
             const defaults = this.chartDefaults();
@@ -685,6 +881,123 @@ function dashboard() {
             setTimeout(() => toast.className = 'toast', 3000);
         },
 
+        // Audit Log
+        async loadAuditLogs(page = 0) {
+            try {
+                this.auditPage = page;
+                const offset = page * 50;
+                const data = await api(`/audit-logs?limit=50&offset=${offset}`);
+                this.auditLogs = data.logs;
+                this.auditTotal = data.total;
+            } catch (err) {
+                console.error('Error loading audit logs:', err);
+            }
+        },
+
+        // Backup & Restore
+        async backupVM(vm) {
+            if (vm.status === 'running') {
+                this.showToast('Stop the VM first to create a backup', 'error');
+                return;
+            }
+            try {
+                const result = await api(`/vms/${vm.id}/backup`, { method: 'POST' });
+                this.showToast(`Backup created: ${result.backup_name}`, 'success');
+                await this.loadBackups();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async downloadBackup(backup) {
+            const token = localStorage.getItem('token');
+            const a = document.createElement('a');
+            a.href = `/api/vms/_/backup/download?backup_name=${encodeURIComponent(backup.name)}&token=${encodeURIComponent(token)}`;
+
+            // Use fetch to get the file with auth header
+            try {
+                const response = await fetch(`/api/vms/_/backup/download?backup_name=${encodeURIComponent(backup.name)}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) throw new Error('Download failed');
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                a.href = url;
+                a.download = backup.name;
+                a.click();
+                window.URL.revokeObjectURL(url);
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
+        async loadBackups() {
+            try {
+                this.backups = await api('/backups');
+            } catch (err) {
+                console.error('Error loading backups:', err);
+            }
+        },
+
+        async restoreFromFile() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.tar.gz';
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    const token = localStorage.getItem('token');
+                    const response = await fetch('/api/vms/restore', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${token}` },
+                        body: formData
+                    });
+                    if (!response.ok) {
+                        const data = await response.json().catch(() => ({}));
+                        throw new Error(data.detail || 'Restore failed');
+                    }
+                    this.showToast('VM restored successfully', 'success');
+                    this.showRestoreModal = false;
+                    await this.loadVMs();
+                } catch (err) {
+                    this.showToast(err.message, 'error');
+                }
+            };
+            input.click();
+        },
+
+        async restoreFromBackup(backup) {
+            try {
+                const formData = new FormData();
+                // Fetch the backup and re-upload it
+                const token = localStorage.getItem('token');
+                const response = await fetch(`/api/vms/_/backup/download?backup_name=${encodeURIComponent(backup.name)}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) throw new Error('Failed to fetch backup');
+                const blob = await response.blob();
+                formData.append('file', new File([blob], backup.name, { type: 'application/gzip' }));
+
+                const restoreResponse = await fetch('/api/vms/restore', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+                if (!restoreResponse.ok) {
+                    const data = await restoreResponse.json().catch(() => ({}));
+                    throw new Error(data.detail || 'Restore failed');
+                }
+                this.showToast('VM restored successfully', 'success');
+                this.showRestoreModal = false;
+                await this.loadVMs();
+            } catch (err) {
+                this.showToast(err.message, 'error');
+            }
+        },
+
         // Inject modals HTML
         injectModals() {
             document.getElementById('modals').innerHTML = `
@@ -999,6 +1312,42 @@ function dashboard() {
                                 <button type="submit" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg">Clone</button>
                             </div>
                         </form>
+                    </div>
+                </div>
+
+                <!-- Restore VM Modal -->
+                <div x-show="showRestoreModal" x-transition.opacity class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" @click.self="showRestoreModal = false">
+                    <div class="bg-slate-800 rounded-xl w-full max-w-lg max-h-[80vh] overflow-y-auto" @click.stop>
+                        <div class="p-6 border-b border-slate-700 flex items-center justify-between">
+                            <h2 class="text-xl font-semibold">Restore VM</h2>
+                            <button @click="showRestoreModal = false" class="text-slate-400 hover:text-white"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                        </div>
+                        <div class="p-6 space-y-4">
+                            <button @click="restoreFromFile()" class="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                                <span>Upload Backup File (.tar.gz)</span>
+                            </button>
+                            <div x-show="backups.length > 0">
+                                <h3 class="text-sm text-slate-400 mb-2">Or restore from existing backup:</h3>
+                                <div class="space-y-2 max-h-60 overflow-y-auto">
+                                    <template x-for="backup in backups" :key="backup.name">
+                                        <div class="flex items-center justify-between bg-slate-700/50 p-3 rounded-lg">
+                                            <div>
+                                                <p class="text-sm font-medium" x-text="backup.name"></p>
+                                                <p class="text-xs text-slate-400" x-text="backup.size_mb + ' MB - ' + new Date(backup.created_at).toLocaleString()"></p>
+                                            </div>
+                                            <div class="flex space-x-2">
+                                                <button @click="downloadBackup(backup)" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-600 rounded" title="Download">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                                                </button>
+                                                <button @click="restoreFromBackup(backup)" class="px-3 py-1 bg-primary-600 hover:bg-primary-700 rounded text-xs">Restore</button>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+                            <p x-show="backups.length === 0" class="text-slate-500 text-sm text-center">No backups available. Create one by stopping a VM and clicking the backup button.</p>
+                        </div>
                     </div>
                 </div>
 

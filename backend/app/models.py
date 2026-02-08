@@ -216,3 +216,21 @@ class CloudInitConfig(BaseModel):
     static_ip: Optional[str] = None  # e.g. "192.168.1.100/24"
     gateway: Optional[str] = None
     dns: List[str] = ["8.8.8.8", "8.8.4.4"]
+
+
+# ==================== Audit Models ====================
+
+class AuditLogEntry(BaseModel):
+    id: int
+    timestamp: str
+    username: str
+    action: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    details: Optional[dict] = None
+    ip_address: Optional[str] = None
+
+
+class AuditLogResponse(BaseModel):
+    total: int
+    logs: List[AuditLogEntry]

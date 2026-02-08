@@ -1,9 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from typing import List
+from starlette.middleware.base import BaseHTTPMiddleware
+from typing import List, Optional
 import os
+import time
+import logging
+
+from .logging_config import setup_logging
+setup_logging()
+logger = logging.getLogger("fast_vm.main")
 
 from .models import (
     VMCreate, VMInfo, VMResponse, VNCConnectionInfo, SpiceConnectionInfo, VMUpdate,
@@ -11,7 +18,8 @@ from .models import (
     Snapshot, SnapshotCreate, SnapshotResponse,
     LoginRequest, Token, UserInfo,
     ChangePasswordRequest, CreateUserRequest,
-    VMClone, CloudInitConfig
+    VMClone, CloudInitConfig,
+    AuditLogEntry, AuditLogResponse
 )
 from .vm_manager import VMManager
 from .auth import (
@@ -20,12 +28,33 @@ from .auth import (
     verify_password, get_user, change_password,
     create_user, delete_user, list_users
 )
+from .database import init_db, save_host_metrics, save_vm_metrics, get_extended_metrics, cleanup_old_metrics
+from .audit import log_action, get_audit_logs
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import asyncio
 import psutil
 from datetime import timedelta, datetime
 from collections import deque
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Request Logging Middleware
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        duration = round((time.time() - start_time) * 1000, 1)
+        logger.info(f"{request.method} {request.url.path} {response.status_code} {duration}ms")
+        return response
+
+
+app.add_middleware(RequestLoggingMiddleware)
 
 # Metrics history buffer (keeps last 60 data points = 10 minutes at 10s intervals)
 METRICS_HISTORY_SIZE = 60
@@ -83,10 +112,13 @@ async def login_page():
 # ==================== Auth Endpoints ====================
 
 @app.post("/api/auth/login", response_model=Token)
-async def login(login_data: LoginRequest):
+@limiter.limit("5/minute")
+async def login(request: Request, login_data: LoginRequest):
     """Authenticate user and return JWT token"""
+    client_ip = request.client.host if request.client else None
     user = authenticate_user(login_data.username, login_data.password)
     if not user:
+        log_action(login_data.username, "login_failed", ip=client_ip)
         raise HTTPException(
             status_code=401,
             detail="Invalid username or password"
@@ -94,6 +126,7 @@ async def login(login_data: LoginRequest):
     access_token = create_access_token(
         data={"sub": user.username, "is_admin": user.is_admin}
     )
+    log_action(user.username, "login", ip=client_ip)
     return Token(access_token=access_token)
 
 
@@ -137,6 +170,7 @@ async def create_new_user(data: CreateUserRequest, current_user: AuthUserInfo = 
         raise HTTPException(status_code=403, detail="Admin access required")
     try:
         create_user(data.username, data.password, data.is_admin)
+        log_action(current_user.username, "create_user", "user", data.username, {"is_admin": data.is_admin})
         return {"success": True, "message": f"User '{data.username}' created successfully"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -151,6 +185,7 @@ async def remove_user(username: str, current_user: AuthUserInfo = Depends(get_cu
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
     try:
         delete_user(username)
+        log_action(current_user.username, "delete_user", "user", username)
         return {"success": True, "message": f"User '{username}' deleted successfully"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -160,6 +195,20 @@ async def remove_user(username: str, current_user: AuthUserInfo = Depends(get_cu
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "Fast VM"}
+
+
+# ==================== Audit Log Endpoints ====================
+
+@app.get("/api/audit-logs", response_model=AuditLogResponse)
+async def get_audit_log(
+    limit: int = 100, offset: int = 0,
+    username: Optional[str] = None, action: Optional[str] = None,
+    current_user: AuthUserInfo = Depends(get_current_user)
+):
+    """Get audit logs (admin only)"""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return get_audit_logs(limit=min(limit, 500), offset=offset, username=username, action=action)
 
 
 # ==================== VM Endpoints ====================
@@ -183,10 +232,12 @@ async def get_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_us
 
 
 @app.post("/api/vms", response_model=VMResponse)
-async def create_vm(vm_data: VMCreate, current_user: AuthUserInfo = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def create_vm(request: Request, vm_data: VMCreate, current_user: AuthUserInfo = Depends(get_current_user)):
     """Create a new VM"""
     try:
         vm = vm_manager.create_vm(vm_data)
+        log_action(current_user.username, "create_vm", "vm", vm.id, {"name": vm.name}, request.client.host if request.client else None)
         return VMResponse(
             success=True,
             message=f"VM '{vm.name}' created successfully",
@@ -197,10 +248,12 @@ async def create_vm(vm_data: VMCreate, current_user: AuthUserInfo = Depends(get_
 
 
 @app.post("/api/vms/{vm_id}/start", response_model=VMResponse)
-async def start_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def start_vm(request: Request, vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Start a VM"""
     try:
         vm = vm_manager.start_vm(vm_id)
+        log_action(current_user.username, "start_vm", "vm", vm_id, {"name": vm.name}, request.client.host if request.client else None)
         return VMResponse(
             success=True,
             message=f"VM '{vm.name}' started successfully",
@@ -213,10 +266,12 @@ async def start_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_
 
 
 @app.post("/api/vms/{vm_id}/stop", response_model=VMResponse)
-async def stop_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def stop_vm(request: Request, vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Stop a VM"""
     try:
         vm = vm_manager.stop_vm(vm_id)
+        log_action(current_user.username, "stop_vm", "vm", vm_id, {"name": vm.name}, request.client.host if request.client else None)
         return VMResponse(
             success=True,
             message=f"VM '{vm.name}' stopped successfully",
@@ -245,7 +300,8 @@ async def restart_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_curren
 
 
 @app.post("/api/vms/{vm_id}/clone", response_model=VMResponse)
-async def clone_vm(vm_id: str, clone_data: VMClone, current_user: AuthUserInfo = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def clone_vm(request: Request, vm_id: str, clone_data: VMClone, current_user: AuthUserInfo = Depends(get_current_user)):
     """Clone a VM (must be stopped)"""
     try:
         vm = vm_manager.clone_vm(
@@ -254,6 +310,7 @@ async def clone_vm(vm_id: str, clone_data: VMClone, current_user: AuthUserInfo =
             memory=clone_data.memory,
             cpus=clone_data.cpus
         )
+        log_action(current_user.username, "clone_vm", "vm", vm.id, {"source_id": vm_id, "name": vm.name}, request.client.host if request.client else None)
         return VMResponse(
             success=True,
             message=f"VM '{vm.name}' cloned successfully",
@@ -282,12 +339,14 @@ async def create_cloudinit(config: CloudInitConfig, current_user: AuthUserInfo =
 
 
 @app.delete("/api/vms/{vm_id}", response_model=VMResponse)
-async def delete_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def delete_vm(request: Request, vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
     """Delete a VM"""
     try:
         vm = vm_manager.get_vm(vm_id)
         vm_name = vm.name if vm else "Unknown"
         vm_manager.delete_vm(vm_id)
+        log_action(current_user.username, "delete_vm", "vm", vm_id, {"name": vm_name}, request.client.host if request.client else None)
         return VMResponse(
             success=True,
             message=f"VM '{vm_name}' deleted successfully"
@@ -296,6 +355,66 @@ async def delete_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_current
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Backup & Restore Endpoints ====================
+
+@app.post("/api/vms/{vm_id}/backup")
+@limiter.limit("10/minute")
+async def backup_vm(request: Request, vm_id: str, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Create a backup of a VM (must be stopped)"""
+    try:
+        result = vm_manager.backup_vm(vm_id)
+        log_action(current_user.username, "backup_vm", "vm", vm_id, {"backup": result["backup_name"]}, request.client.host if request.client else None)
+        return {"success": True, "message": f"Backup created: {result['backup_name']}", **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/vms/{vm_id}/backup/download")
+async def download_backup(vm_id: str, backup_name: str, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Download a VM backup file"""
+    backup_path = vm_manager.backups_dir / backup_name
+    if not backup_path.exists() or not backup_path.is_file():
+        raise HTTPException(status_code=404, detail="Backup not found")
+    # Security: ensure file is within backups dir
+    if not str(backup_path.resolve()).startswith(str(vm_manager.backups_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid backup path")
+    return FileResponse(str(backup_path), filename=backup_name, media_type="application/gzip")
+
+
+@app.post("/api/vms/restore")
+@limiter.limit("10/minute")
+async def restore_vm_from_backup(request: Request, file: UploadFile = File(...), new_name: Optional[str] = None, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Restore a VM from an uploaded backup file"""
+    import tempfile
+    if not file.filename.endswith('.tar.gz'):
+        raise HTTPException(status_code=400, detail="File must be a .tar.gz backup")
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz') as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        vm = vm_manager.restore_vm(tmp_path, new_name)
+        log_action(current_user.username, "restore_vm", "vm", vm.id, {"name": vm.name, "from": file.filename}, request.client.host if request.client else None)
+        return VMResponse(success=True, message=f"VM '{vm.name}' restored successfully", vm=vm)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+@app.get("/api/backups")
+async def list_backups(current_user: AuthUserInfo = Depends(get_current_user)):
+    """List available backups"""
+    return vm_manager.list_backups()
 
 
 @app.get("/api/vms/{vm_id}/vnc", response_model=VNCConnectionInfo)
@@ -472,6 +591,13 @@ async def get_vm_metrics_history(vm_id: str, current_user: AuthUserInfo = Depend
     return {"points": list(metrics_history["vms"][vm_id])}
 
 
+@app.get("/api/metrics/history/extended")
+async def get_extended_metrics_history(hours: int = 24, vm_id: Optional[str] = None, current_user: AuthUserInfo = Depends(get_current_user)):
+    """Get extended metrics history from SQLite (up to 24h)"""
+    hours = min(hours, 24)
+    return get_extended_metrics(hours, vm_id)
+
+
 async def collect_metrics_task():
     """Background task to collect metrics every 10 seconds"""
     while True:
@@ -481,11 +607,17 @@ async def collect_metrics_task():
             mem = psutil.virtual_memory()
             timestamp = datetime.utcnow().isoformat()
 
+            host_cpu = round(cpu_percent, 1)
+            host_mem = round(mem.percent, 1)
+
             metrics_history["host"].append({
                 "t": timestamp,
-                "cpu": round(cpu_percent, 1),
-                "mem": round(mem.percent, 1),
+                "cpu": host_cpu,
+                "mem": host_mem,
             })
+
+            # Persist host metrics to SQLite
+            save_host_metrics(timestamp, host_cpu, host_mem)
 
             # VM metrics
             for vm_id, vm in vm_manager.vms.items():
@@ -509,14 +641,21 @@ async def collect_metrics_task():
                     if vm_id not in metrics_history["vms"]:
                         metrics_history["vms"][vm_id] = deque(maxlen=METRICS_HISTORY_SIZE)
 
+                    vm_cpu = round(cpu, 1)
+                    vm_mem_mb = round(mem_mb, 1)
+                    vm_mem_pct = round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0
+
                     metrics_history["vms"][vm_id].append({
                         "t": timestamp,
-                        "cpu": round(cpu, 1),
-                        "mem_mb": round(mem_mb, 1),
-                        "mem_pct": round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0,
+                        "cpu": vm_cpu,
+                        "mem_mb": vm_mem_mb,
+                        "mem_pct": vm_mem_pct,
                         "io_r": io_read,
                         "io_w": io_write,
                     })
+
+                    # Persist VM metrics to SQLite
+                    save_vm_metrics(timestamp, vm_id, vm_cpu, vm_mem_mb, vm_mem_pct, io_read, io_write)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
@@ -526,8 +665,11 @@ async def collect_metrics_task():
                 if vm_id not in active_ids:
                     del metrics_history["vms"][vm_id]
 
-        except Exception:
-            pass
+            # Periodic cleanup of old metrics from SQLite (every collection cycle)
+            cleanup_old_metrics(24)
+
+        except Exception as e:
+            logger.error(f"Error collecting metrics: {e}")
 
         await asyncio.sleep(10)
 
@@ -535,6 +677,7 @@ async def collect_metrics_task():
 @app.on_event("startup")
 async def start_metrics_collector():
     """Start metrics collection background task"""
+    init_db()
     asyncio.create_task(collect_metrics_task())
 
 
@@ -579,6 +722,7 @@ async def create_volume(vol_data: VolumeCreate, current_user: AuthUserInfo = Dep
     """Create a new volume"""
     try:
         vol = vm_manager.create_volume(vol_data)
+        log_action(current_user.username, "create_volume", "volume", vol.id, {"name": vol.name})
         return VolumeResponse(
             success=True,
             message=f"Volume '{vol.name}' created successfully",
@@ -595,6 +739,7 @@ async def delete_volume(vol_id: str, current_user: AuthUserInfo = Depends(get_cu
         vol = vm_manager.get_volume(vol_id)
         vol_name = vol.name if vol else "Unknown"
         vm_manager.delete_volume(vol_id)
+        log_action(current_user.username, "delete_volume", "volume", vol_id, {"name": vol_name})
         return VolumeResponse(
             success=True,
             message=f"Volume '{vol_name}' deleted successfully"
@@ -706,7 +851,7 @@ async def periodic_cleanup():
         try:
             vm_manager.vnc_proxy_manager.cleanup_orphaned_proxies()
         except Exception as e:
-            print(f"Error in periodic cleanup: {e}")
+            logger.error(f"Error in periodic cleanup: {e}")
 
 
 @app.on_event("startup")
@@ -715,11 +860,95 @@ async def startup_event():
     asyncio.create_task(periodic_cleanup())
 
 
+# ==================== WebSocket Metrics ====================
+
+# Connected WebSocket clients
+ws_clients: set = set()
+
+
+@app.websocket("/ws/metrics")
+async def websocket_metrics(websocket: WebSocket):
+    """WebSocket endpoint for real-time metrics push (every 2s)"""
+    # Accept without auth check for simplicity (metrics are not sensitive)
+    # In production you could validate a token query param
+    await websocket.accept()
+    ws_clients.add(websocket)
+    logger.info(f"WebSocket client connected ({len(ws_clients)} total)")
+    try:
+        while True:
+            # Keep connection alive, listen for client messages (ping/filter)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            except WebSocketDisconnect:
+                break
+
+            # Build metrics payload
+            try:
+                cpu_percent = psutil.cpu_percent(interval=0)
+                mem = psutil.virtual_memory()
+                timestamp = datetime.utcnow().isoformat()
+
+                payload = {
+                    "type": "metrics",
+                    "host": {
+                        "t": timestamp,
+                        "cpu": round(cpu_percent, 1),
+                        "mem": round(mem.percent, 1),
+                    },
+                    "vms": {}
+                }
+
+                for vid, vm in vm_manager.vms.items():
+                    if vm.get('status') != 'running' or not vm.get('pid'):
+                        continue
+                    try:
+                        proc = psutil.Process(vm['pid'])
+                        cpu = proc.cpu_percent(interval=0)
+                        mem_info = proc.memory_info()
+                        mem_mb = mem_info.rss / (1024 * 1024)
+                        configured_mb = vm.get('memory', 1)
+                        try:
+                            io = proc.io_counters()
+                            io_r = round(io.read_bytes / (1024 * 1024), 1)
+                            io_w = round(io.write_bytes / (1024 * 1024), 1)
+                        except (psutil.AccessDenied, AttributeError):
+                            io_r = io_w = 0
+
+                        payload["vms"][vid] = {
+                            "t": timestamp,
+                            "cpu": round(cpu, 1),
+                            "mem_mb": round(mem_mb, 1),
+                            "mem_pct": round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0,
+                            "io_r": io_r,
+                            "io_w": io_w,
+                        }
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                await websocket.send_json(payload)
+            except Exception as e:
+                logger.error(f"Error building WS metrics: {e}")
+
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        ws_clients.discard(websocket)
+        logger.info(f"WebSocket client disconnected ({len(ws_clients)} remaining)")
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on application shutdown"""
     vm_manager.vnc_proxy_manager.cleanup_all()
     vm_manager.spice_proxy_manager.cleanup_all()
+    # Close all WebSocket connections
+    for ws in list(ws_clients):
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

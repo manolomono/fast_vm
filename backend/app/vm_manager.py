@@ -16,6 +16,9 @@ from .models import (
 )
 from .vnc_proxy import VNCProxyManager
 from .spice_proxy import SpiceProxyManager
+import logging
+
+logger = logging.getLogger("fast_vm.vm_manager")
 
 
 class VMManager:
@@ -30,6 +33,8 @@ class VMManager:
         self.volumes_file = self.vms_dir / "volumes.json"
         self.volumes_dir = self.vms_dir / "volumes"
         self.volumes_dir.mkdir(parents=True, exist_ok=True)
+        self.backups_dir = self.vms_dir.parent / "backups"
+        self.backups_dir.mkdir(parents=True, exist_ok=True)
 
         self.vms = self._load_vms()
         self.volumes = self._load_volumes()
@@ -53,7 +58,7 @@ class VMManager:
         try:
             subprocess.run(["which", "swtpm"], check=True, capture_output=True)
         except subprocess.CalledProcessError:
-            print("Warning: swtpm not installed, TPM will not be available")
+            logger.warning("swtpm not installed, TPM will not be available")
             return None
 
         # Kill any existing swtpm for this VM
@@ -81,7 +86,7 @@ class VMManager:
             subprocess.run(swtpm_cmd, check=True, capture_output=True)
             return str(tpm_socket)
         except subprocess.CalledProcessError as e:
-            print(f"Warning: Failed to start swtpm: {e}")
+            logger.warning(f"Failed to start swtpm: {e}")
             return None
 
     def _stop_swtpm(self, vm_id: str, vm_dir: Path):
@@ -105,11 +110,11 @@ class VMManager:
 
             # Create macvtap interface in bridge mode
             cmd = f"sudo -n /usr/sbin/ip link add link {parent_iface} name {name} type macvtap mode bridge 2>&1"
-            print(f"Running: {cmd}")
+            logger.info(f"Running: {cmd}")
             ret = os.system(cmd)
-            print(f"Result: {ret}")
+            logger.info(f"Result: {ret}")
             if ret != 0:
-                print(f"Error creating macvtap {name}: exit code {ret}")
+                logger.error(f"Error creating macvtap {name}: exit code {ret}")
                 return None
 
             # Set MAC address
@@ -131,7 +136,7 @@ class VMManager:
 
             return None
         except Exception as e:
-            print(f"Error creating macvtap {name}: {e}")
+            logger.error(f"Error creating macvtap {name}: {e}")
             return None
 
     def _delete_macvtap(self, name: str):
@@ -786,7 +791,7 @@ class VMManager:
                         'active': state == 'up'
                     })
         except Exception as e:
-            print(f"Error getting bridges: {e}")
+            logger.warning(f"Error getting bridges: {e}")
             # Fallback: try reading from /sys/class/net
             try:
                 import os
@@ -838,7 +843,7 @@ class VMManager:
                             'active': state == 'up'
                         })
         except Exception as e:
-            print(f"Error getting interfaces: {e}")
+            logger.warning(f"Error getting interfaces: {e}")
 
         return sorted(interfaces, key=lambda x: (not x['active'], x['name']))
 
@@ -1531,3 +1536,139 @@ class VMManager:
             self._save_vms()
 
         return True
+
+    # ==================== Backup & Restore ====================
+
+    def backup_vm(self, vm_id: str) -> Dict:
+        """Backup a VM (must be stopped). Creates a tar.gz with config + disk."""
+        import tarfile
+
+        if vm_id not in self.vms:
+            raise ValueError(f"VM {vm_id} not found")
+
+        vm = self.vms[vm_id]
+        self._update_vm_status(vm_id)
+
+        if vm['status'] == VMStatus.RUNNING.value:
+            raise ValueError("Cannot backup a running VM. Stop it first.")
+
+        disk_path = vm.get('disk_path')
+        if not disk_path or not os.path.exists(disk_path):
+            raise ValueError("VM disk not found")
+
+        vm_dir = self.vms_dir / vm_id
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r'[^\w\-.]', '_', vm['name'])
+        backup_name = f"{safe_name}_{timestamp}.tar.gz"
+        backup_path = self.backups_dir / backup_name
+
+        # Write VM config to a temp file
+        config_path = vm_dir / "vm_config.json"
+        with open(config_path, 'w') as f:
+            json.dump(vm, f, indent=2)
+
+        try:
+            with tarfile.open(backup_path, "w:gz") as tar:
+                # Add config
+                tar.add(str(config_path), arcname="vm_config.json")
+                # Add disk
+                tar.add(disk_path, arcname="disk.qcow2")
+                # Add OVMF_VARS if exists
+                ovmf_vars = vm_dir / "OVMF_VARS.fd"
+                if ovmf_vars.exists():
+                    tar.add(str(ovmf_vars), arcname="OVMF_VARS.fd")
+        finally:
+            # Clean up temp config
+            if config_path.exists():
+                config_path.unlink()
+
+        size_mb = round(backup_path.stat().st_size / (1024 * 1024), 1)
+        logger.info(f"Backup created: {backup_name} ({size_mb} MB)")
+
+        return {
+            "backup_name": backup_name,
+            "backup_path": str(backup_path),
+            "size_mb": size_mb,
+            "vm_name": vm['name']
+        }
+
+    def restore_vm(self, backup_path: str, new_name: str = None) -> VMInfo:
+        """Restore a VM from a backup tar.gz"""
+        import tarfile
+
+        if not os.path.exists(backup_path):
+            raise ValueError(f"Backup file not found: {backup_path}")
+
+        new_vm_id = str(uuid.uuid4())
+        new_vm_dir = self.vms_dir / new_vm_id
+        new_vm_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with tarfile.open(backup_path, "r:gz") as tar:
+                # Security: validate no path traversal
+                for member in tar.getmembers():
+                    if member.name.startswith('/') or '..' in member.name:
+                        raise ValueError("Invalid backup: contains unsafe paths")
+
+                tar.extractall(path=str(new_vm_dir))
+
+            # Read config
+            config_path = new_vm_dir / "vm_config.json"
+            if not config_path.exists():
+                raise ValueError("Invalid backup: missing vm_config.json")
+
+            with open(config_path, 'r') as f:
+                vm_config = json.load(f)
+
+            # Update with new identity
+            new_disk_path = new_vm_dir / "disk.qcow2"
+            vm_config['id'] = new_vm_id
+            vm_config['name'] = new_name or (vm_config.get('name', 'Restored') + ' (restored)')
+            vm_config['disk_path'] = str(new_disk_path)
+            vm_config['status'] = VMStatus.STOPPED.value
+            vm_config['pid'] = None
+            vm_config['vnc_port'] = self._get_free_vnc_port()
+            vm_config['spice_port'] = self._get_free_spice_port()
+            vm_config['ws_port'] = None
+            vm_config['ws_proxy_pid'] = None
+            vm_config['spice_ws_port'] = None
+            vm_config['spice_proxy_pid'] = None
+
+            # Generate new MAC addresses
+            for net in vm_config.get('networks', []):
+                net['id'] = str(uuid.uuid4())
+                net['mac_address'] = self._generate_mac_address()
+
+            # Clean up volumes reference (don't carry over)
+            vm_config['volumes'] = []
+
+            # Clean up temp config
+            config_path.unlink()
+
+            self.vms[new_vm_id] = vm_config
+            self._save_vms()
+
+            logger.info(f"VM restored from backup: {vm_config['name']} ({new_vm_id})")
+            return VMInfo(**vm_config)
+
+        except Exception as e:
+            # Clean up on failure
+            if new_vm_dir.exists():
+                shutil.rmtree(new_vm_dir)
+            raise
+
+    def list_backups(self) -> list:
+        """List available backup files"""
+        backups = []
+        for f in sorted(self.backups_dir.glob("*.tar.gz"), reverse=True):
+            try:
+                stat = f.stat()
+                backups.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size_mb": round(stat.st_size / (1024 * 1024), 1),
+                    "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+            except Exception:
+                continue
+        return backups

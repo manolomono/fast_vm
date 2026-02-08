@@ -12,8 +12,11 @@ os.environ["JWT_SECRET_KEY"] = "test-secret-key"
 
 import app.auth as auth_module
 from app.auth import hash_password, create_access_token
-from app.main import app as fastapi_app, vm_manager
+from app.main import app as fastapi_app, vm_manager, limiter
 from pathlib import Path
+
+# Disable rate limiting during tests
+limiter.enabled = False
 
 
 @pytest.fixture(autouse=True)

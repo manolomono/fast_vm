@@ -12,6 +12,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 import bcrypt
 from pydantic import BaseModel
+import logging
+
+logger = logging.getLogger("fast_vm.auth")
 
 # Configuration
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "fast-vm-secret-key-change-in-production")
@@ -163,7 +166,7 @@ def create_default_user():
             "is_admin": True
         }
         save_users(users)
-        print("Created default admin user (username: admin, password: admin)")
+        logger.info("Created default admin user (username: admin, password: admin)")
 
 
 # FastAPI dependency for getting current user
