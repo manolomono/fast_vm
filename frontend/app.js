@@ -218,6 +218,9 @@ function dashboard() {
 
         // Metrics
         async loadMetrics() {
+            // Skip if WebSocket is providing real-time metrics
+            if (this.metricsWsConnected) return;
+
             // Host metrics
             try {
                 this.hostMetrics = await api('/system/metrics');

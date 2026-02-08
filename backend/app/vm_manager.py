@@ -48,6 +48,10 @@ class VMManager:
         # Path to spice-guest-tools ISO
         self.spice_tools_iso = self.vms_dir.parent / "images" / "spice-guest-tools.iso"
 
+        # Persistent Process objects + I/O baselines for accurate metrics
+        self._metric_procs: dict = {}    # vm_id -> psutil.Process
+        self._metric_prev_io: dict = {}  # vm_id -> (read_bytes, write_bytes)
+
     def _start_swtpm(self, vm_id: str, vm_dir: Path) -> Optional[str]:
         """Start swtpm (software TPM) for a VM"""
         tpm_dir = vm_dir / "tpm"
@@ -1225,23 +1229,43 @@ class VMManager:
             raise ValueError("VM process not found")
 
         try:
-            proc = psutil.Process(pid)
+            # Reuse Process object for accurate cpu_percent across calls
+            if vm_id not in self._metric_procs or self._metric_procs[vm_id].pid != pid:
+                proc = psutil.Process(pid)
+                self._metric_procs[vm_id] = proc
+                proc.cpu_percent(interval=0)  # prime baseline
+                # Prime I/O baseline
+                try:
+                    io = proc.io_counters()
+                    self._metric_prev_io[vm_id] = (io.read_bytes, io.write_bytes)
+                except (psutil.AccessDenied, AttributeError):
+                    self._metric_prev_io[vm_id] = (0, 0)
 
-            # CPU usage (percentage of one core)
-            cpu_percent = proc.cpu_percent(interval=0.1)
+            proc = self._metric_procs[vm_id]
+
+            # CPU usage (sum parent + children for full QEMU)
+            cpu_percent = proc.cpu_percent(interval=0)
+            try:
+                for child in proc.children(recursive=True):
+                    cpu_percent += child.cpu_percent(interval=0)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
             # Memory info
             mem_info = proc.memory_info()
             mem_rss_mb = mem_info.rss / (1024 * 1024)
 
-            # I/O counters
+            # I/O delta since last call
+            io_read_mb = 0.0
+            io_write_mb = 0.0
             try:
                 io = proc.io_counters()
-                io_read_mb = io.read_bytes / (1024 * 1024)
-                io_write_mb = io.write_bytes / (1024 * 1024)
+                prev_r, prev_w = self._metric_prev_io.get(vm_id, (io.read_bytes, io.write_bytes))
+                io_read_mb = max(io.read_bytes - prev_r, 0) / (1024 * 1024)
+                io_write_mb = max(io.write_bytes - prev_w, 0) / (1024 * 1024)
+                self._metric_prev_io[vm_id] = (io.read_bytes, io.write_bytes)
             except (psutil.AccessDenied, AttributeError):
-                io_read_mb = 0
-                io_write_mb = 0
+                pass
 
             # Configured resources
             configured_mem_mb = vm.get('memory', 0)
@@ -1254,10 +1278,12 @@ class VMManager:
                 "memory_used_mb": round(mem_rss_mb, 1),
                 "memory_configured_mb": configured_mem_mb,
                 "memory_percent": round((mem_rss_mb / configured_mem_mb * 100), 1) if configured_mem_mb > 0 else 0,
-                "io_read_mb": round(io_read_mb, 1),
-                "io_write_mb": round(io_write_mb, 1),
+                "io_read_mb": round(io_read_mb, 2),
+                "io_write_mb": round(io_write_mb, 2),
             }
         except psutil.NoSuchProcess:
+            self._metric_procs.pop(vm_id, None)
+            self._metric_prev_io.pop(vm_id, None)
             raise ValueError("VM process no longer running")
 
     # ==================== Volume Management ====================
