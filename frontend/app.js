@@ -40,8 +40,8 @@ function dashboard() {
         bridges: [],
         interfaces: [],
 
-        // UI State
-        currentView: 'dashboard',
+        // UI State - restore from URL hash
+        currentView: (['dashboard','volumes','users','monitoring','audit'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard'),
         selectedVm: null,
         showConsole: false,
         consoleVm: null,
@@ -159,6 +159,28 @@ function dashboard() {
                 // Load metrics immediately
                 this.loadMetrics();
                 if (this.user?.is_admin) this.loadUsers();
+
+                // Sync currentView <-> URL hash
+                this.$watch('currentView', (val) => {
+                    const hash = val === 'dashboard' ? '' : '#' + val;
+                    if (location.hash !== '#' + val) history.replaceState(null, '', hash || location.pathname);
+                });
+                window.addEventListener('hashchange', () => {
+                    const view = location.hash.slice(1);
+                    if (['dashboard','volumes','users','monitoring','audit'].includes(view)) {
+                        this.currentView = view;
+                    } else if (!location.hash) {
+                        this.currentView = 'dashboard';
+                    }
+                });
+
+                // If restored to monitoring, start charts
+                if (this.currentView === 'monitoring') {
+                    this.$nextTick(() => this.loadMonitoringCharts());
+                }
+                if (this.currentView === 'audit' && this.user?.is_admin) {
+                    this.loadAuditLogs();
+                }
             } catch (err) {
                 console.error('Init error:', err);
                 localStorage.removeItem('token');
