@@ -620,6 +620,9 @@ async def get_extended_metrics_history(hours: int = 24, vm_id: Optional[str] = N
 
 async def collect_metrics_task():
     """Background task to collect metrics every 10 seconds"""
+    # Keep Process objects to get accurate cpu_percent across ticks
+    vm_procs: dict[str, psutil.Process] = {}
+
     while True:
         try:
             # Host metrics
@@ -640,12 +643,20 @@ async def collect_metrics_task():
             save_host_metrics(timestamp, host_cpu, host_mem)
 
             # VM metrics
+            active_ids = set()
             for vm_id, vm in vm_manager.vms.items():
                 if vm.get('status') != 'running' or not vm.get('pid'):
                     continue
+                active_ids.add(vm_id)
                 try:
-                    proc = psutil.Process(vm['pid'])
-                    cpu = proc.cpu_percent(interval=0.1)
+                    pid = vm['pid']
+                    if vm_id not in vm_procs or vm_procs[vm_id].pid != pid:
+                        vm_procs[vm_id] = psutil.Process(pid)
+                        vm_procs[vm_id].cpu_percent(interval=0)  # prime baseline
+                        continue  # skip this tick
+
+                    proc = vm_procs[vm_id]
+                    cpu = proc.cpu_percent(interval=0)
                     mem_info = proc.memory_info()
                     mem_mb = mem_info.rss / (1024 * 1024)
                     configured_mb = vm.get('memory', 1)
@@ -677,13 +688,16 @@ async def collect_metrics_task():
                     # Persist VM metrics to SQLite
                     save_vm_metrics(timestamp, vm_id, vm_cpu, vm_mem_mb, vm_mem_pct, io_read, io_write)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    vm_procs.pop(vm_id, None)
                     continue
 
             # Cleanup VMs that are no longer running
-            active_ids = {vm_id for vm_id, vm in vm_manager.vms.items() if vm.get('status') == 'running'}
             for vm_id in list(metrics_history["vms"].keys()):
                 if vm_id not in active_ids:
                     del metrics_history["vms"][vm_id]
+            for vm_id in list(vm_procs):
+                if vm_id not in active_ids:
+                    del vm_procs[vm_id]
 
             # Periodic cleanup of old metrics from SQLite (every collection cycle)
             cleanup_old_metrics(24)
@@ -888,9 +902,11 @@ async def websocket_metrics(websocket: WebSocket):
 
     receive_task = asyncio.create_task(_receive_loop())
 
+    # Keep Process objects between iterations so cpu_percent has a baseline
+    vm_procs: dict[str, psutil.Process] = {}
+
     try:
         while not receive_task.done():
-            # Build and send metrics payload
             try:
                 cpu_percent = psutil.cpu_percent(interval=0)
                 mem = psutil.virtual_memory()
@@ -906,11 +922,20 @@ async def websocket_metrics(websocket: WebSocket):
                     "vms": {}
                 }
 
+                active_vids = set()
                 for vid, vm in vm_manager.vms.items():
                     if vm.get('status') != 'running' or not vm.get('pid'):
                         continue
+                    active_vids.add(vid)
                     try:
-                        proc = psutil.Process(vm['pid'])
+                        # Reuse Process object for accurate cpu_percent
+                        pid = vm['pid']
+                        if vid not in vm_procs or vm_procs[vid].pid != pid:
+                            vm_procs[vid] = psutil.Process(pid)
+                            vm_procs[vid].cpu_percent(interval=0)  # prime the baseline
+                            continue  # skip this tick, next one will have real data
+
+                        proc = vm_procs[vid]
                         cpu = proc.cpu_percent(interval=0)
                         mem_info = proc.memory_info()
                         mem_mb = mem_info.rss / (1024 * 1024)
@@ -931,7 +956,13 @@ async def websocket_metrics(websocket: WebSocket):
                             "io_w": io_w,
                         }
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        vm_procs.pop(vid, None)
                         continue
+
+                # Cleanup stale process refs
+                for vid in list(vm_procs):
+                    if vid not in active_vids:
+                        del vm_procs[vid]
 
                 await websocket.send_json(payload)
             except (WebSocketDisconnect, ConnectionError):
