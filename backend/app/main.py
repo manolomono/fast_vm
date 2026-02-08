@@ -36,11 +36,30 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import asyncio
 import psutil
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from collections import deque
 
 limiter = Limiter(key_func=get_remote_address)
-app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0")
+ws_clients: set = set()
+
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    """Lifespan handler: startup and shutdown logic"""
+    init_db()
+    asyncio.create_task(collect_metrics_task())
+    asyncio.create_task(periodic_cleanup())
+    yield
+    vm_manager.vnc_proxy_manager.cleanup_all()
+    vm_manager.spice_proxy_manager.cleanup_all()
+    for ws in list(ws_clients):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -56,20 +75,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RequestLoggingMiddleware)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan handler: startup and shutdown logic"""
-    # Startup
-    asyncio.create_task(collect_metrics_task())
-    asyncio.create_task(periodic_cleanup())
-    yield
-    # Shutdown
-    vm_manager.vnc_proxy_manager.cleanup_all()
-    vm_manager.spice_proxy_manager.cleanup_all()
-
-
-app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0", lifespan=lifespan)
 
 # Metrics history buffer (keeps last 60 data points = 10 minutes at 10s intervals)
 METRICS_HISTORY_SIZE = 60
@@ -620,7 +625,7 @@ async def collect_metrics_task():
             # Host metrics
             cpu_percent = psutil.cpu_percent(interval=0.5)
             mem = psutil.virtual_memory()
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.now(timezone.utc).isoformat()
 
             host_cpu = round(cpu_percent, 1)
             host_mem = round(mem.percent, 1)
@@ -688,12 +693,6 @@ async def collect_metrics_task():
 
         await asyncio.sleep(10)
 
-
-@app.on_event("startup")
-async def start_metrics_collector():
-    """Start metrics collection background task"""
-    init_db()
-    asyncio.create_task(collect_metrics_task())
 
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
 async def update_vm(vm_id: str, updates: VMUpdate, current_user: AuthUserInfo = Depends(get_current_user)):
@@ -868,41 +867,34 @@ async def periodic_cleanup():
             logger.error(f"Error in periodic cleanup: {e}")
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Start background tasks on application startup"""
-    asyncio.create_task(periodic_cleanup())
-
 
 # ==================== WebSocket Metrics ====================
-
-# Connected WebSocket clients
-ws_clients: set = set()
 
 
 @app.websocket("/ws/metrics")
 async def websocket_metrics(websocket: WebSocket):
     """WebSocket endpoint for real-time metrics push (every 2s)"""
-    # Accept without auth check for simplicity (metrics are not sensitive)
-    # In production you could validate a token query param
     await websocket.accept()
     ws_clients.add(websocket)
     logger.info(f"WebSocket client connected ({len(ws_clients)} total)")
-    try:
-        while True:
-            # Keep connection alive, listen for client messages (ping/filter)
-            try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
-            except WebSocketDisconnect:
-                break
 
-            # Build metrics payload
+    async def _receive_loop():
+        """Listen for client disconnect"""
+        try:
+            while True:
+                await websocket.receive_text()
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    receive_task = asyncio.create_task(_receive_loop())
+
+    try:
+        while not receive_task.done():
+            # Build and send metrics payload
             try:
                 cpu_percent = psutil.cpu_percent(interval=0)
                 mem = psutil.virtual_memory()
-                timestamp = datetime.utcnow().isoformat()
+                timestamp = datetime.now(timezone.utc).isoformat()
 
                 payload = {
                     "type": "metrics",
@@ -942,27 +934,18 @@ async def websocket_metrics(websocket: WebSocket):
                         continue
 
                 await websocket.send_json(payload)
+            except (WebSocketDisconnect, ConnectionError):
+                break
             except Exception as e:
                 logger.error(f"Error building WS metrics: {e}")
 
-    except (WebSocketDisconnect, Exception):
-        pass
+            await asyncio.sleep(2)
     finally:
+        receive_task.cancel()
         ws_clients.discard(websocket)
         logger.info(f"WebSocket client disconnected ({len(ws_clients)} remaining)")
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on application shutdown"""
-    vm_manager.vnc_proxy_manager.cleanup_all()
-    vm_manager.spice_proxy_manager.cleanup_all()
-    # Close all WebSocket connections
-    for ws in list(ws_clients):
-        try:
-            await ws.close()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
