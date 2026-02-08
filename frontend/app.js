@@ -1,5 +1,8 @@
 // Fast VM Dashboard - Alpine.js Application
 
+// Chart instances stored OUTSIDE Alpine to avoid Proxy wrapping
+const _chartInstances = {};
+
 // API Helper with auth
 async function api(endpoint, options = {}) {
     const token = localStorage.getItem('token');
@@ -293,7 +296,6 @@ function dashboard() {
         },
 
         // Monitoring charts
-        charts: {},
         monitoringInterval: null,
         monitoringVmId: null, // null = show all, string = single VM
         metricsWs: null,
@@ -319,10 +321,10 @@ function dashboard() {
         },
 
         destroyAllCharts() {
-            for (const [id, chart] of Object.entries(this.charts)) {
+            for (const [id, chart] of Object.entries(_chartInstances)) {
                 try { chart.destroy(); } catch(e) {}
+                delete _chartInstances[id];
             }
-            this.charts = {};
         },
 
         stopMonitoring() {
@@ -502,7 +504,7 @@ function dashboard() {
                     x: { display: true, ticks: { maxTicksLimit: 8, color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } },
                     y: { display: true, beginAtZero: true, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#334155' } }
                 },
-                plugins: { legend: { display: false } }
+                plugins: { legend: { display: false }, title: { display: false }, subtitle: { display: false }, tooltip: { enabled: true } }
             };
         },
 
@@ -523,11 +525,11 @@ function dashboard() {
             const rawDatasets = this._rawCopy(datasets);
 
             // Update existing chart data instead of destroying/recreating
-            if (this.charts[canvasId]) {
-                const chart = this.charts[canvasId];
+            if (_chartInstances[canvasId]) {
+                const chart = _chartInstances[canvasId];
                 if (!chart.canvas || !chart.canvas.isConnected) {
                     chart.destroy();
-                    delete this.charts[canvasId];
+                    delete _chartInstances[canvasId];
                 } else {
                     chart.data.labels = rawLabels;
                     rawDatasets.forEach((ds, i) => {
@@ -548,7 +550,7 @@ function dashboard() {
             if (opts.legend) defaults.plugins.legend = { display: true, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 11 } } };
 
             try {
-                this.charts[canvasId] = new Chart(ctx, {
+                _chartInstances[canvasId] = new Chart(ctx, {
                     type: 'line',
                     data: { labels: rawLabels, datasets: rawDatasets },
                     options: defaults
