@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, WebSocket, WebSocketDisconnect
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -55,6 +56,20 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RequestLoggingMiddleware)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan handler: startup and shutdown logic"""
+    # Startup
+    asyncio.create_task(collect_metrics_task())
+    asyncio.create_task(periodic_cleanup())
+    yield
+    # Shutdown
+    vm_manager.vnc_proxy_manager.cleanup_all()
+    vm_manager.spice_proxy_manager.cleanup_all()
+
+
+app = FastAPI(title="Fast VM", description="QEMU VM Manager API", version="1.0.0", lifespan=lifespan)
 
 # Metrics history buffer (keeps last 60 data points = 10 minutes at 10s intervals)
 METRICS_HISTORY_SIZE = 60
@@ -679,7 +694,6 @@ async def start_metrics_collector():
     """Start metrics collection background task"""
     init_db()
     asyncio.create_task(collect_metrics_task())
-
 
 @app.put("/api/vms/{vm_id}", response_model=VMResponse)
 async def update_vm(vm_id: str, updates: VMUpdate, current_user: AuthUserInfo = Depends(get_current_user)):
