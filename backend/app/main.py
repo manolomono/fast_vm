@@ -1015,7 +1015,7 @@ async def websocket_metrics(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Error building WS metrics: {e}")
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
     finally:
         receive_task.cancel()
         ws_clients.discard(websocket)

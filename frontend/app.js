@@ -304,10 +304,10 @@ function dashboard() {
         metricsWs: null,
         metricsWsConnected: false,
 
-        // Ring buffers for WebSocket data (keep last 60 points = ~2 min at 2s)
+        // Ring buffers for WebSocket data (keep last 120 points = ~1 min at 0.5s)
         wsHostHistory: [],
         wsVmHistory: {},
-        WS_MAX_POINTS: 60,
+        WS_MAX_POINTS: 120,
 
         openVmMonitoring(vm) {
             this.monitoringVmId = vm.id;
