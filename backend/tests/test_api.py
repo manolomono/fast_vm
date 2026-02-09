@@ -6,10 +6,14 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_health_check(app_client):
-    """Test health endpoint"""
+    """Test health endpoint returns status and checks"""
     response = await app_client.get("/api/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    data = response.json()
+    assert data["status"] in ("healthy", "degraded")
+    assert data["service"] == "Fast VM"
+    assert "checks" in data
+    assert "database" in data["checks"]
 
 
 async def test_list_vms_empty(app_client, auth_headers):

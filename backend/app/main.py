@@ -29,12 +29,13 @@ from .auth import (
     verify_password, get_user, change_password,
     create_user, delete_user, list_users
 )
-from .database import init_db, save_host_metrics, save_vm_metrics, get_extended_metrics, cleanup_old_metrics
+from .database import init_db, save_host_metrics, save_vm_metrics, get_extended_metrics, cleanup_old_metrics, cleanup_old_audit_logs
 from .audit import log_action, get_audit_logs
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import asyncio
+import subprocess
 import psutil
 from datetime import timedelta, datetime, timezone
 from collections import deque
@@ -43,11 +44,37 @@ limiter = Limiter(key_func=get_remote_address)
 ws_clients: set = set()
 
 
+def _preflight_checks():
+    """Run pre-flight checks and log warnings for missing dependencies"""
+    try:
+        result = subprocess.run(["qemu-system-x86_64", "--version"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            logger.info(f"QEMU: {result.stdout.split(chr(10))[0]}")
+        else:
+            logger.warning("QEMU not found or not working. VM operations will fail.")
+    except Exception:
+        logger.warning("qemu-system-x86_64 not found. Install QEMU to create VMs.")
+
+    if not os.path.exists("/dev/kvm"):
+        logger.warning("KVM not available (/dev/kvm not found). VMs will run without hardware acceleration.")
+
+    try:
+        disk = psutil.disk_usage(str(vm_manager.vms_dir))
+        free_gb = round(disk.free / (1024 ** 3), 1)
+        if free_gb < 10:
+            logger.warning(f"Low disk space: {free_gb} GB free. Consider freeing up space.")
+        else:
+            logger.info(f"Disk space: {free_gb} GB free")
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Lifespan handler: startup and shutdown logic"""
     init_db()
     create_default_user()
+    _preflight_checks()
     asyncio.create_task(collect_metrics_task())
     asyncio.create_task(periodic_cleanup())
     yield
@@ -239,10 +266,50 @@ async def remove_user(username: str, current_user: AuthUserInfo = Depends(get_cu
         raise HTTPException(status_code=404, detail=str(e))
 
 
+def _check_system_health() -> dict:
+    """Check system dependencies and return health status"""
+    checks = {}
+
+    # QEMU available
+    try:
+        result = subprocess.run(["qemu-system-x86_64", "--version"], capture_output=True, text=True, timeout=5)
+        checks["qemu"] = {"ok": result.returncode == 0, "version": result.stdout.split('\n')[0] if result.returncode == 0 else None}
+    except Exception:
+        checks["qemu"] = {"ok": False, "version": None}
+
+    # KVM available
+    checks["kvm"] = {"ok": os.path.exists("/dev/kvm")}
+
+    # Disk space
+    try:
+        disk = psutil.disk_usage(str(vm_manager.vms_dir))
+        free_gb = round(disk.free / (1024 ** 3), 1)
+        checks["disk"] = {"ok": free_gb > 5, "free_gb": free_gb}
+    except Exception:
+        checks["disk"] = {"ok": False, "free_gb": 0}
+
+    # Database writable
+    try:
+        from .database import get_connection
+        with get_connection() as conn:
+            conn.execute("SELECT 1")
+        checks["database"] = {"ok": True}
+    except Exception:
+        checks["database"] = {"ok": False}
+
+    return checks
+
+
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "Fast VM"}
+    """Health check endpoint with system status"""
+    checks = _check_system_health()
+    all_ok = all(c["ok"] for c in checks.values())
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "service": "Fast VM",
+        "checks": checks
+    }
 
 
 # ==================== Audit Log Endpoints ====================
@@ -747,8 +814,7 @@ async def collect_metrics_task():
                     del vm_procs[vm_id]
                     vm_prev_io.pop(vm_id, None)
 
-            # Periodic cleanup of old metrics from SQLite (every collection cycle)
-            cleanup_old_metrics(24)
+            # Note: cleanup runs in periodic_cleanup() task, not here
 
         except Exception as e:
             logger.error(f"Error collecting metrics: {e}")
@@ -920,11 +986,13 @@ async def delete_snapshot(vm_id: str, snap_id: str, current_user: AuthUserInfo =
 # ==================== Background Tasks ====================
 
 async def periodic_cleanup():
-    """Periodic cleanup of orphaned VNC proxies"""
+    """Periodic cleanup: orphaned proxies, old metrics, old audit logs"""
     while True:
         await asyncio.sleep(300)  # 5 minutes
         try:
             vm_manager.vnc_proxy_manager.cleanup_orphaned_proxies()
+            cleanup_old_metrics(24)       # Keep 24h of metrics
+            cleanup_old_audit_logs(90)    # Keep 90 days of audit logs
         except Exception as e:
             logger.error(f"Error in periodic cleanup: {e}")
 

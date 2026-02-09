@@ -160,6 +160,18 @@ def cleanup_old_metrics(hours: int = 24):
         logger.error(f"Error cleaning up old metrics: {e}")
 
 
+def cleanup_old_audit_logs(days: int = 90):
+    """Delete audit logs older than specified days"""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    try:
+        with get_connection() as conn:
+            cursor = conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,))
+            if cursor.rowcount > 0:
+                logger.info(f"Cleaned up {cursor.rowcount} audit log entries older than {days} days")
+    except Exception as e:
+        logger.error(f"Error cleaning up old audit logs: {e}")
+
+
 # ==================== User Management ====================
 
 def migrate_users_from_json(json_path: str):
