@@ -935,7 +935,24 @@ async def periodic_cleanup():
 
 @app.websocket("/ws/metrics")
 async def websocket_metrics(websocket: WebSocket):
-    """WebSocket endpoint for real-time metrics push (every 2s)"""
+    """WebSocket endpoint for real-time metrics push (every 0.5s).
+    Requires authentication via ?token=JWT query parameter.
+    """
+    # Authenticate via query parameter
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401, reason="Missing authentication token")
+        return
+
+    from .auth import verify_token, get_user
+    payload = verify_token(token)
+    if not payload or not payload.get("sub"):
+        await websocket.close(code=4401, reason="Invalid or expired token")
+        return
+    if not get_user(payload["sub"]):
+        await websocket.close(code=4401, reason="User not found")
+        return
+
     await websocket.accept()
     ws_clients.add(websocket)
     logger.info(f"WebSocket client connected ({len(ws_clients)} total)")

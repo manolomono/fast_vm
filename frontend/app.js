@@ -388,7 +388,8 @@ function dashboard() {
             }
 
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${proto}//${location.host}/ws/metrics`;
+            const token = localStorage.getItem('token');
+            const wsUrl = `${proto}//${location.host}/ws/metrics${token ? '?token=' + encodeURIComponent(token) : ''}`;
 
             try {
                 this.metricsWs = new WebSocket(wsUrl);

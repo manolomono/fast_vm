@@ -106,26 +106,56 @@ class VMManager:
         except Exception:
             pass
 
+    @staticmethod
+    def _validate_iface_name(name: str) -> str:
+        """Validate a network interface name to prevent injection"""
+        if not re.match(r'^[a-zA-Z0-9_.-]{1,15}$', name):
+            raise ValueError(f"Invalid interface name: {name}")
+        return name
+
+    @staticmethod
+    def _validate_mac_address(mac: str) -> str:
+        """Validate a MAC address format"""
+        if not re.match(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$', mac):
+            raise ValueError(f"Invalid MAC address: {mac}")
+        return mac
+
     def _create_macvtap(self, name: str, parent_iface: str, mac: str) -> Optional[int]:
         """Create a macvtap interface and return its tap device index"""
         try:
+            # Validate inputs before passing to subprocess
+            name = self._validate_iface_name(name)
+            parent_iface = self._validate_iface_name(parent_iface)
+            mac = self._validate_mac_address(mac)
+
             # Delete existing interface if any
-            os.system(f"sudo -n /usr/sbin/ip link delete {name} 2>/dev/null")
+            subprocess.run(
+                ["sudo", "-n", "/usr/sbin/ip", "link", "delete", name],
+                capture_output=True, timeout=10
+            )
 
             # Create macvtap interface in bridge mode
-            cmd = f"sudo -n /usr/sbin/ip link add link {parent_iface} name {name} type macvtap mode bridge 2>&1"
-            logger.info(f"Running: {cmd}")
-            ret = os.system(cmd)
-            logger.info(f"Result: {ret}")
-            if ret != 0:
-                logger.error(f"Error creating macvtap {name}: exit code {ret}")
+            logger.info(f"Creating macvtap {name} on {parent_iface}")
+            result = subprocess.run(
+                ["sudo", "-n", "/usr/sbin/ip", "link", "add", "link", parent_iface,
+                 "name", name, "type", "macvtap", "mode", "bridge"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                logger.error(f"Error creating macvtap {name}: {result.stderr}")
                 return None
 
             # Set MAC address
-            os.system(f"sudo -n /usr/sbin/ip link set {name} address {mac}")
+            subprocess.run(
+                ["sudo", "-n", "/usr/sbin/ip", "link", "set", name, "address", mac],
+                capture_output=True, timeout=10
+            )
 
             # Bring interface up
-            os.system(f"sudo -n /usr/sbin/ip link set {name} up")
+            subprocess.run(
+                ["sudo", "-n", "/usr/sbin/ip", "link", "set", name, "up"],
+                capture_output=True, timeout=10
+            )
 
             # Get the tap device index from /sys
             tap_index_path = Path(f"/sys/class/net/{name}/ifindex")
@@ -134,7 +164,10 @@ class VMManager:
 
                 # Set permissions on /dev/tapN so QEMU can access it
                 tap_dev = f"/dev/tap{tap_index}"
-                os.system(f"sudo -n /bin/chmod 666 {tap_dev}")
+                subprocess.run(
+                    ["sudo", "-n", "/bin/chmod", "666", tap_dev],
+                    capture_output=True, timeout=10
+                )
 
                 return tap_index
 
@@ -145,7 +178,15 @@ class VMManager:
 
     def _delete_macvtap(self, name: str):
         """Delete a macvtap interface"""
-        os.system(f"sudo -n /usr/sbin/ip link delete {name} 2>/dev/null")
+        try:
+            name = self._validate_iface_name(name)
+        except ValueError:
+            logger.warning(f"Skipping delete of invalid interface name: {name}")
+            return
+        subprocess.run(
+            ["sudo", "-n", "/usr/sbin/ip", "link", "delete", name],
+            capture_output=True, timeout=10
+        )
 
     def _cleanup_vm_macvtaps(self, vm_id: str):
         """Clean up all macvtap interfaces for a VM"""

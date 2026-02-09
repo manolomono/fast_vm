@@ -82,9 +82,9 @@ class NetworkConfig(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     type: Literal["nat", "bridge", "macvtap", "isolated"] = "nat"
     model: Literal["virtio", "e1000", "rtl8139"] = "virtio"  # NIC model
-    bridge_name: Optional[str] = None  # For bridge mode (e.g., br0, virbr0)
-    parent_interface: Optional[str] = None  # For macvtap mode (e.g., eno1, eth0)
-    mac_address: Optional[str] = None  # Auto-generated if not specified
+    bridge_name: Optional[str] = Field(None, pattern=r'^[a-zA-Z0-9_.-]{1,15}$')
+    parent_interface: Optional[str] = Field(None, pattern=r'^[a-zA-Z0-9_.-]{1,15}$')
+    mac_address: Optional[str] = Field(None, pattern=r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
     port_forwards: List[PortForward] = []  # For NAT mode
 
 
@@ -118,6 +118,26 @@ class SnapshotCreate(BaseModel):
     description: Optional[str] = None
 
 
+def _validate_vm_name(name: str) -> str:
+    """Validate VM name: alphanumeric, spaces, hyphens, underscores, dots only"""
+    if not re.match(r'^[a-zA-Z0-9 _.\-]+$', name):
+        raise ValueError("VM name can only contain letters, numbers, spaces, hyphens, underscores, and dots")
+    return name
+
+
+def _validate_path_safe(path: Optional[str]) -> Optional[str]:
+    """Validate that a path doesn't contain traversal sequences"""
+    if path is None:
+        return None
+    # Block path traversal
+    if '..' in path or '\x00' in path:
+        raise ValueError("Path contains invalid characters")
+    # Must be an absolute path
+    if not path.startswith('/'):
+        raise ValueError("Path must be absolute")
+    return path
+
+
 # VM Models
 class VMCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=50)
@@ -126,6 +146,16 @@ class VMCreate(BaseModel):
     disk_size: int = Field(default=20, ge=5, le=500)
     iso_path: Optional[str] = None
     secondary_iso_path: Optional[str] = None  # Secondary CD-ROM (e.g., drivers ISO)
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v):
+        return _validate_vm_name(v)
+
+    @field_validator('iso_path', 'secondary_iso_path')
+    @classmethod
+    def validate_paths(cls, v):
+        return _validate_path_safe(v)
 
     # Network configuration
     networks: List[NetworkConfig] = Field(default_factory=lambda: [NetworkConfig()])
@@ -206,6 +236,11 @@ class VMUpdate(BaseModel):
     cpu_model: Optional[Literal["host", "qemu64", "max", "Skylake-Client", "EPYC"]] = None
     display_type: Optional[Literal["std", "virtio", "qxl", "cirrus"]] = None
 
+    @field_validator('iso_path', 'secondary_iso_path')
+    @classmethod
+    def validate_paths(cls, v):
+        return _validate_path_safe(v)
+
 
 # Response models for volumes and snapshots
 class VolumeResponse(BaseModel):
@@ -227,12 +262,17 @@ class VMClone(BaseModel):
     memory: Optional[int] = Field(None, ge=512, le=32768)
     cpus: Optional[int] = Field(None, ge=1, le=16)
 
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v):
+        return _validate_vm_name(v)
+
 
 # ==================== Cloud-init Models ====================
 
 class CloudInitConfig(BaseModel):
-    hostname: str = Field(..., min_length=1, max_length=63)
-    username: str = Field(default="user", min_length=1, max_length=32)
+    hostname: str = Field(..., min_length=1, max_length=63, pattern=r'^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$')
+    username: str = Field(default="user", min_length=1, max_length=32, pattern=r'^[a-z_][a-z0-9_-]*$')
     password: Optional[str] = Field(None, min_length=1, max_length=128)
     ssh_authorized_keys: List[str] = []
     packages: List[str] = []
