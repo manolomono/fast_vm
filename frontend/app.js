@@ -22,7 +22,12 @@ async function api(endpoint, options = {}) {
 
     if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.detail || 'API Error');
+        // Handle Pydantic validation errors (422)
+        if (response.status === 422 && Array.isArray(data.detail)) {
+            const msgs = data.detail.map(e => e.msg || e.message || JSON.stringify(e)).join('; ');
+            throw new Error(msgs);
+        }
+        throw new Error(data.detail || `Error ${response.status}`);
     }
 
     return response.json();
@@ -82,6 +87,9 @@ function dashboard() {
             gateway: '',
             dns: '8.8.8.8, 8.8.4.4'
         },
+
+        // Loading state for async operations
+        actionLoading: false,
 
         // Modals
         showCreateModal: false,
@@ -353,6 +361,11 @@ function dashboard() {
         },
 
         stopMonitoring() {
+            if (this._wsReconnectTimer) {
+                clearTimeout(this._wsReconnectTimer);
+                this._wsReconnectTimer = null;
+            }
+            this._wsReconnectAttempts = 0;
             if (this.monitoringInterval) {
                 clearInterval(this.monitoringInterval);
                 this.monitoringInterval = null;
@@ -397,6 +410,7 @@ function dashboard() {
                 this.metricsWs.onopen = () => {
                     console.log('Metrics WebSocket connected');
                     this.metricsWsConnected = true;
+                    this._wsReconnectAttempts = 0;
                 };
 
                 this.metricsWs.onmessage = (event) => {
@@ -414,12 +428,18 @@ function dashboard() {
                     }
                 };
 
-                this.metricsWs.onclose = () => {
+                this.metricsWs.onclose = (ev) => {
                     this.metricsWsConnected = false;
-                    // Fallback to polling if WS dies and still on monitoring view
-                    if (this.currentView === 'monitoring') {
-                        console.log('WebSocket closed, falling back to polling');
-                        this._startPollingFallback();
+                    if (this.currentView === 'monitoring' && ev.code !== 4401) {
+                        // Auto-reconnect with exponential backoff
+                        const delay = Math.min(1000 * Math.pow(2, this._wsReconnectAttempts || 0), 16000);
+                        this._wsReconnectAttempts = (this._wsReconnectAttempts || 0) + 1;
+                        console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${this._wsReconnectAttempts})`);
+                        this._wsReconnectTimer = setTimeout(() => this._connectMetricsWs(), delay);
+                    } else if (ev.code === 4401) {
+                        console.warn('WebSocket auth failed, redirecting to login');
+                        localStorage.removeItem('token');
+                        window.location.href = '/login.html';
                     }
                 };
 
@@ -710,16 +730,20 @@ function dashboard() {
 
         // VM Actions
         async startVM(id) {
+            if (this.actionLoading) return;
+            this.actionLoading = true;
             try {
                 await api(`/vms/${id}/start`, { method: 'POST' });
                 this.showToast('VM started successfully', 'success');
                 await this.loadVMs();
             } catch (err) {
                 this.showToast(err.message, 'error');
-            }
+            } finally { this.actionLoading = false; }
         },
 
         async stopVM(id) {
+            if (this.actionLoading) return;
+            this.actionLoading = true;
             try {
                 await api(`/vms/${id}/stop`, { method: 'POST' });
                 this.showToast('VM stopped successfully', 'success');
@@ -729,10 +753,12 @@ function dashboard() {
                 }
             } catch (err) {
                 this.showToast(err.message, 'error');
-            }
+            } finally { this.actionLoading = false; }
         },
 
         async createVM() {
+            if (this.actionLoading) return;
+            this.actionLoading = true;
             try {
                 const data = { ...this.createForm };
                 if (!data.iso_path) delete data.iso_path;
@@ -748,7 +774,7 @@ function dashboard() {
                 await this.loadVMs();
             } catch (err) {
                 this.showToast(err.message, 'error');
-            }
+            } finally { this.actionLoading = false; }
         },
 
         async updateVM() {
@@ -779,7 +805,8 @@ function dashboard() {
         },
 
         async deleteVM() {
-            if (!this.deleteTarget) return;
+            if (!this.deleteTarget || this.actionLoading) return;
+            this.actionLoading = true;
             try {
                 await api(`/vms/${this.deleteTarget.id}`, { method: 'DELETE' });
                 this.showToast('VM deleted successfully', 'success');
@@ -788,7 +815,7 @@ function dashboard() {
                 await this.loadVMs();
             } catch (err) {
                 this.showToast(err.message, 'error');
-            }
+            } finally { this.actionLoading = false; }
         },
 
         // Volume Actions
