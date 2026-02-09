@@ -1,0 +1,17 @@
+.git
+.gitignore
+*.md
+LICENSE
+vms/*
+images/*
+data/
+backups/*
+backend/venv/
+backend/.pytest_cache/
+backend/logs/*.log
+backend/users.json
+backend/users.json.bak
+__pycache__/
+*.pyc
+.vscode/
+.idea/

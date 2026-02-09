@@ -30,3 +30,6 @@ Thumbs.db
 # Logs
 *.log
 data/
+
+# Auth migration backups
+users.json.bak

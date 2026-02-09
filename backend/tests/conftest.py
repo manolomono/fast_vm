@@ -2,7 +2,6 @@
 import pytest
 import os
 import sys
-import json
 
 # Add backend dir to path so 'app' package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,8 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Set test environment before importing app
 os.environ["JWT_SECRET_KEY"] = "test-secret-key"
 
+import app.database as db_module
 import app.auth as auth_module
 from app.auth import hash_password, create_access_token
+from app.database import init_db, db_create_user
 from app.main import app as fastapi_app, vm_manager, limiter
 from pathlib import Path
 
@@ -21,7 +22,7 @@ limiter.enabled = False
 
 @pytest.fixture(autouse=True)
 def temp_dirs(tmp_path):
-    """Create temporary directories for VMs and users"""
+    """Create temporary directories for VMs and users (SQLite-backed)"""
     vms_dir = tmp_path / "vms"
     vms_dir.mkdir()
     images_dir = tmp_path / "images"
@@ -32,33 +33,34 @@ def temp_dirs(tmp_path):
     (vms_dir / "vms.json").write_text("{}")
     (vms_dir / "volumes.json").write_text("{}")
 
-    # Create users file with default admin
-    users_file = tmp_path / "users.json"
-    users = {
-        "admin": {
-            "username": "admin",
-            "hashed_password": hash_password("admin"),
-            "is_admin": True,
-        }
-    }
-    users_file.write_text(json.dumps(users))
+    # Point database to temp directory
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    original_db_dir = db_module.DB_DIR
+    original_db_path = db_module.DB_PATH
+    db_module.DB_DIR = data_dir
+    db_module.DB_PATH = data_dir / "fast_vm.db"
 
-    return {
+    # Initialize DB and create default admin user
+    init_db()
+    hashed = hash_password("admin")
+    db_create_user("admin", hashed, is_admin=True)
+
+    yield {
         "vms_dir": str(vms_dir),
         "images_dir": str(images_dir),
-        "users_file": str(users_file),
         "tmp_path": tmp_path,
     }
+
+    # Restore originals
+    db_module.DB_DIR = original_db_dir
+    db_module.DB_PATH = original_db_path
 
 
 @pytest.fixture
 def app_client(temp_dirs):
     """Create a test client pointing to temp directories"""
     from httpx import ASGITransport, AsyncClient
-
-    # Point auth to temp users file
-    original_users_file = auth_module.USERS_FILE
-    auth_module.USERS_FILE = temp_dirs["users_file"]
 
     # Point vm_manager to temp dirs
     orig_vms_dir = vm_manager.vms_dir
@@ -81,7 +83,6 @@ def app_client(temp_dirs):
     yield client
 
     # Restore originals
-    auth_module.USERS_FILE = original_users_file
     vm_manager.vms_dir = orig_vms_dir
     vm_manager.config_file = orig_config_file
     vm_manager.volumes_file = orig_volumes_file
@@ -93,8 +94,5 @@ def app_client(temp_dirs):
 @pytest.fixture
 def auth_headers(temp_dirs):
     """Get auth headers with a valid admin token"""
-    original = auth_module.USERS_FILE
-    auth_module.USERS_FILE = temp_dirs["users_file"]
     token = create_access_token({"sub": "admin"})
-    auth_module.USERS_FILE = original
     return {"Authorization": f"Bearer {token}"}

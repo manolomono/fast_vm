@@ -54,7 +54,7 @@ async def test_change_password(app_client, auth_headers):
     response = await app_client.post(
         "/api/auth/change-password",
         headers=auth_headers,
-        json={"current_password": "admin", "new_password": "newpass123"},
+        json={"current_password": "admin", "new_password": "NewPass123"},
     )
     assert response.status_code == 200
     assert response.json()["success"] is True
@@ -65,7 +65,7 @@ async def test_change_password_wrong_current(app_client, auth_headers):
     response = await app_client.post(
         "/api/auth/change-password",
         headers=auth_headers,
-        json={"current_password": "wrong", "new_password": "newpass123"},
+        json={"current_password": "wrong", "new_password": "NewPass123"},
     )
     assert response.status_code == 400
 
@@ -84,7 +84,7 @@ async def test_create_user(app_client, auth_headers):
     response = await app_client.post(
         "/api/auth/users",
         headers=auth_headers,
-        json={"username": "testuser", "password": "testpass", "is_admin": False},
+        json={"username": "testuser", "password": "TestPass1", "is_admin": False},
     )
     assert response.status_code == 200
     assert response.json()["success"] is True
@@ -95,7 +95,7 @@ async def test_create_duplicate_user(app_client, auth_headers):
     response = await app_client.post(
         "/api/auth/users",
         headers=auth_headers,
-        json={"username": "admin", "password": "pass", "is_admin": False},
+        json={"username": "admin", "password": "AdminPass1", "is_admin": False},
     )
     assert response.status_code == 400
 
@@ -105,7 +105,7 @@ async def test_delete_user(app_client, auth_headers):
     await app_client.post(
         "/api/auth/users",
         headers=auth_headers,
-        json={"username": "todelete", "password": "pass", "is_admin": False},
+        json={"username": "todelete", "password": "DelPass1x", "is_admin": False},
     )
     response = await app_client.delete(
         "/api/auth/users/todelete", headers=auth_headers

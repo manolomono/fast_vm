@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+# Install QEMU and required system packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    qemu-kvm \
+    qemu-system-x86 \
+    qemu-utils \
+    cloud-image-utils \
+    genisoimage \
+    libvirt-daemon-system \
+    websockify \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy application code
+COPY backend/ /app/backend/
+COPY frontend/ /app/frontend/
+
+# Create necessary directories
+RUN mkdir -p /app/vms /app/images /app/data /app/backups /app/backend/logs
+
+# Expose port
+EXPOSE 8000
+
+# Environment defaults (override in docker-compose or at runtime)
+ENV PYTHONUNBUFFERED=1
+ENV JWT_SECRET_KEY=change-me-in-production
+
+WORKDIR /app/backend
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

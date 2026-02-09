@@ -128,14 +128,14 @@ class TestUserManagementFlow:
         resp = await app_client.post(
             "/api/auth/users",
             headers=auth_headers,
-            json={"username": "developer", "password": "devpass", "is_admin": False},
+            json={"username": "developer", "password": "DevPass1x", "is_admin": False},
         )
         assert resp.status_code == 200
 
         # 2. New user logs in
         resp = await app_client.post(
             "/api/auth/login",
-            json={"username": "developer", "password": "devpass"},
+            json={"username": "developer", "password": "DevPass1x"},
         )
         assert resp.status_code == 200
         dev_token = resp.json()["access_token"]
@@ -155,7 +155,7 @@ class TestUserManagementFlow:
         resp = await app_client.post(
             "/api/auth/users",
             headers=dev_headers,
-            json={"username": "hacker", "password": "pass", "is_admin": True},
+            json={"username": "hacker", "password": "HackPass1", "is_admin": True},
         )
         assert resp.status_code == 403
 
@@ -163,21 +163,21 @@ class TestUserManagementFlow:
         resp = await app_client.post(
             "/api/auth/change-password",
             headers=dev_headers,
-            json={"current_password": "devpass", "new_password": "newdevpass"},
+            json={"current_password": "DevPass1x", "new_password": "NewDevPass2"},
         )
         assert resp.status_code == 200
 
         # 7. Login with new password works
         resp = await app_client.post(
             "/api/auth/login",
-            json={"username": "developer", "password": "newdevpass"},
+            json={"username": "developer", "password": "NewDevPass2"},
         )
         assert resp.status_code == 200
 
         # 8. Old password no longer works
         resp = await app_client.post(
             "/api/auth/login",
-            json={"username": "developer", "password": "devpass"},
+            json={"username": "developer", "password": "DevPass1x"},
         )
         assert resp.status_code == 401
 
@@ -190,7 +190,7 @@ class TestUserManagementFlow:
         # 10. Deleted user can no longer login
         resp = await app_client.post(
             "/api/auth/login",
-            json={"username": "developer", "password": "newdevpass"},
+            json={"username": "developer", "password": "NewDevPass2"},
         )
         assert resp.status_code == 401
 

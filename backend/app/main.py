@@ -47,6 +47,7 @@ ws_clients: set = set()
 async def lifespan(app_instance: FastAPI):
     """Lifespan handler: startup and shutdown logic"""
     init_db()
+    create_default_user()
     asyncio.create_task(collect_metrics_task())
     asyncio.create_task(periodic_cleanup())
     yield
@@ -83,14 +84,41 @@ metrics_history = {
     "vms": {}  # vm_id -> deque of metrics
 }
 
-# Enable CORS
+# Enable CORS - restrict in production via CORS_ORIGINS env var
+_cors_origins = os.environ.get("CORS_ORIGINS", "*")
+_allowed_origins = [o.strip() for o in _cors_origins.split(",")] if _cors_origins != "*" else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# Security Headers Middleware
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if os.environ.get("FASTVM_PRODUCTION"):
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdn.tailwindcss.com; "
+                "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "img-src 'self' data:; "
+                "connect-src 'self' ws: wss:;"
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Initialize VM Manager
 vm_manager = VMManager()
@@ -172,7 +200,7 @@ async def change_user_password(data: ChangePasswordRequest, current_user: AuthUs
         change_password(current_user.username, data.new_password)
         return {"success": True, "message": "Password changed successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/auth/users")
@@ -239,7 +267,7 @@ async def list_vms(current_user: AuthUserInfo = Depends(get_current_user)):
     try:
         return vm_manager.list_vms()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/vms/{vm_id}", response_model=VMInfo)
@@ -282,7 +310,7 @@ async def start_vm(request: Request, vm_id: str, current_user: AuthUserInfo = De
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/stop", response_model=VMResponse)
@@ -300,7 +328,7 @@ async def stop_vm(request: Request, vm_id: str, current_user: AuthUserInfo = Dep
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/restart", response_model=VMResponse)
@@ -316,7 +344,7 @@ async def restart_vm(vm_id: str, current_user: AuthUserInfo = Depends(get_curren
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/clone", response_model=VMResponse)
@@ -339,7 +367,7 @@ async def clone_vm(request: Request, vm_id: str, clone_data: VMClone, current_us
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/cloudinit")
@@ -355,7 +383,7 @@ async def create_cloudinit(config: CloudInitConfig, current_user: AuthUserInfo =
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/api/vms/{vm_id}", response_model=VMResponse)
@@ -374,7 +402,7 @@ async def delete_vm(request: Request, vm_id: str, current_user: AuthUserInfo = D
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== Backup & Restore Endpoints ====================
@@ -390,7 +418,7 @@ async def backup_vm(request: Request, vm_id: str, current_user: AuthUserInfo = D
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/vms/{vm_id}/backup/download")
@@ -425,7 +453,7 @@ async def restore_vm_from_backup(request: Request, file: UploadFile = File(...),
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
     finally:
         if 'tmp_path' in locals() and os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -446,7 +474,7 @@ async def get_vnc_info(vm_id: str, current_user: AuthUserInfo = Depends(get_curr
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/vnc/disconnect", response_model=VMResponse)
@@ -466,7 +494,7 @@ async def disconnect_vnc(vm_id: str, current_user: AuthUserInfo = Depends(get_cu
             message="VNC proxy disconnected successfully"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== SPICE Endpoints ====================
@@ -480,7 +508,7 @@ async def get_spice_info(vm_id: str, current_user: AuthUserInfo = Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/spice/disconnect", response_model=VMResponse)
@@ -500,7 +528,7 @@ async def disconnect_spice(vm_id: str, current_user: AuthUserInfo = Depends(get_
             message="SPICE proxy disconnected successfully"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/spice-tools")
@@ -509,7 +537,7 @@ async def get_spice_tools_status(current_user: AuthUserInfo = Depends(get_curren
     try:
         return vm_manager.get_spice_tools_status()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/vms/{vm_id}/logs")
@@ -521,7 +549,7 @@ async def get_vm_logs(vm_id: str, current_user: AuthUserInfo = Depends(get_curre
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/isos")
@@ -531,7 +559,7 @@ async def list_isos(current_user: AuthUserInfo = Depends(get_current_user)):
         isos = vm_manager.get_available_isos()
         return isos
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/bridges")
@@ -541,7 +569,7 @@ async def list_bridges(current_user: AuthUserInfo = Depends(get_current_user)):
         bridges = vm_manager.get_available_bridges()
         return bridges
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/interfaces")
@@ -551,7 +579,7 @@ async def list_interfaces(current_user: AuthUserInfo = Depends(get_current_user)
         interfaces = vm_manager.get_available_interfaces()
         return interfaces
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/system/user")
@@ -570,7 +598,7 @@ async def get_vm_metrics(vm_id: str, current_user: AuthUserInfo = Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/system/metrics")
@@ -591,7 +619,7 @@ async def get_system_metrics(current_user: AuthUserInfo = Depends(get_current_us
             "disk_percent": round(disk.percent, 1)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/metrics/history")
@@ -741,7 +769,7 @@ async def update_vm(vm_id: str, updates: VMUpdate, current_user: AuthUserInfo = 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== Volume Endpoints ====================
@@ -752,7 +780,7 @@ async def list_volumes(current_user: AuthUserInfo = Depends(get_current_user)):
     try:
         return vm_manager.list_volumes()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/volumes/{vol_id}", response_model=Volume)
@@ -794,7 +822,7 @@ async def delete_volume(vol_id: str, current_user: AuthUserInfo = Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/volumes/{vol_id}", response_model=VMResponse)
@@ -810,7 +838,7 @@ async def attach_volume(vm_id: str, vol_id: str, current_user: AuthUserInfo = De
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/api/vms/{vm_id}/volumes/{vol_id}", response_model=VMResponse)
@@ -826,7 +854,7 @@ async def detach_volume(vm_id: str, vol_id: str, current_user: AuthUserInfo = De
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== Snapshot Endpoints ====================
@@ -839,7 +867,7 @@ async def list_snapshots(vm_id: str, current_user: AuthUserInfo = Depends(get_cu
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/snapshots", response_model=SnapshotResponse)
@@ -855,7 +883,7 @@ async def create_snapshot(vm_id: str, snap_data: SnapshotCreate, current_user: A
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vms/{vm_id}/snapshots/{snap_id}/restore", response_model=VMResponse)
@@ -871,7 +899,7 @@ async def restore_snapshot(vm_id: str, snap_id: str, current_user: AuthUserInfo 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/api/vms/{vm_id}/snapshots/{snap_id}", response_model=SnapshotResponse)
@@ -886,7 +914,7 @@ async def delete_snapshot(vm_id: str, snap_id: str, current_user: AuthUserInfo =
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal error: {e}"); raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== Background Tasks ====================

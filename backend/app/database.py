@@ -7,7 +7,7 @@ import json
 import logging
 from contextlib import contextmanager
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("fast_vm.database")
 
@@ -36,6 +36,13 @@ def init_db():
                 memory_percent REAL,
                 io_read_mb REAL,
                 io_write_mb REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                hashed_password TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -100,7 +107,7 @@ def save_vm_metrics(timestamp: str, vm_id: str, cpu: float, mem_mb: float, mem_p
 
 def get_extended_metrics(hours: int = 24, vm_id: str = None):
     """Get metrics history from SQLite for extended time range"""
-    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     result = {"host": [], "vms": {}}
 
     try:
@@ -144,10 +151,82 @@ def get_extended_metrics(hours: int = 24, vm_id: str = None):
 
 def cleanup_old_metrics(hours: int = 24):
     """Delete metrics older than specified hours"""
-    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     try:
         with get_connection() as conn:
             conn.execute("DELETE FROM metrics_host WHERE timestamp < ?", (cutoff,))
             conn.execute("DELETE FROM metrics_vm WHERE timestamp < ?", (cutoff,))
     except Exception as e:
         logger.error(f"Error cleaning up old metrics: {e}")
+
+
+# ==================== User Management ====================
+
+def migrate_users_from_json(json_path: str):
+    """One-time migration: import users from users.json into SQLite"""
+    if not os.path.exists(json_path):
+        return
+    try:
+        with open(json_path, 'r') as f:
+            users = json.load(f)
+        if not users:
+            return
+        with get_connection() as conn:
+            for udata in users.values():
+                conn.execute(
+                    "INSERT OR IGNORE INTO users (username, hashed_password, is_admin) VALUES (?, ?, ?)",
+                    (udata["username"], udata["hashed_password"], 1 if udata.get("is_admin", False) else 0)
+                )
+        # Rename old file so migration doesn't run again
+        backup = json_path + ".bak"
+        os.rename(json_path, backup)
+        logger.info(f"Migrated {len(users)} users from JSON to SQLite (backup: {backup})")
+    except Exception as e:
+        logger.error(f"Error migrating users from JSON: {e}")
+
+
+def db_get_user(username: str) -> dict | None:
+    """Get a user by username"""
+    with get_connection() as conn:
+        row = conn.execute("SELECT username, hashed_password, is_admin FROM users WHERE username = ?", (username,)).fetchone()
+        if row:
+            return {"username": row["username"], "hashed_password": row["hashed_password"], "is_admin": bool(row["is_admin"])}
+    return None
+
+
+def db_list_users() -> list:
+    """List all users (without password hashes)"""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT username, is_admin FROM users").fetchall()
+        return [{"username": r["username"], "is_admin": bool(r["is_admin"])} for r in rows]
+
+
+def db_create_user(username: str, hashed_password: str, is_admin: bool = False) -> dict:
+    """Create a new user"""
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (username, hashed_password, is_admin) VALUES (?, ?, ?)",
+                (username, hashed_password, 1 if is_admin else 0)
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"User '{username}' already exists")
+    return {"username": username, "hashed_password": hashed_password, "is_admin": is_admin}
+
+
+def db_delete_user(username: str) -> bool:
+    """Delete a user"""
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM users WHERE username = ?", (username,))
+        if cursor.rowcount == 0:
+            raise ValueError(f"User '{username}' not found")
+    return True
+
+
+def db_change_password(username: str, hashed_password: str) -> bool:
+    """Change a user's password"""
+    with get_connection() as conn:
+        cursor = conn.execute("UPDATE users SET hashed_password = ? WHERE username = ?", (hashed_password, username))
+        if cursor.rowcount == 0:
+            raise ValueError(f"User '{username}' not found")
+    return True

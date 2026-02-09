@@ -1,10 +1,10 @@
 """
 Authentication module for Fast VM
 Handles JWT token creation/verification and user management
+Uses SQLite for user persistence (via database module)
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-import json
 import os
 
 from fastapi import Depends, HTTPException, status
@@ -14,17 +14,27 @@ import bcrypt
 from pydantic import BaseModel
 import logging
 
+from app.database import (
+    db_get_user, db_list_users, db_create_user,
+    db_delete_user, db_change_password, migrate_users_from_json,
+)
+
 logger = logging.getLogger("fast_vm.auth")
 
 # Configuration
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "fast-vm-secret-key-change-in-production")
+_default_secret = "fast-vm-secret-key-change-in-production"
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", _default_secret)
+if os.environ.get("FASTVM_PRODUCTION") and SECRET_KEY == _default_secret:
+    raise RuntimeError("JWT_SECRET_KEY must be set in production. Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\"")
+if SECRET_KEY == _default_secret:
+    logger.warning("Using default JWT secret key. Set JWT_SECRET_KEY env var for production.")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 # Security scheme
 security = HTTPBearer()
 
-# Users file path
+# Legacy users.json path (for migration)
 USERS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users.json")
 
 
@@ -83,26 +93,12 @@ def verify_token(token: str) -> Optional[dict]:
         return None
 
 
-# User management functions
-def load_users() -> dict:
-    """Load users from JSON file"""
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-
-def save_users(users: dict) -> None:
-    """Save users to JSON file"""
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
-
-
+# User management functions (SQLite-backed)
 def get_user(username: str) -> Optional[User]:
     """Get a user by username"""
-    users = load_users()
-    if username in users:
-        return User(**users[username])
+    data = db_get_user(username)
+    if data:
+        return User(**data)
     return None
 
 
@@ -118,54 +114,37 @@ def authenticate_user(username: str, password: str) -> Optional[User]:
 
 def create_user(username: str, password: str, is_admin: bool = False) -> User:
     """Create a new user"""
-    users = load_users()
-    if username in users:
-        raise ValueError(f"User '{username}' already exists")
-    users[username] = {
-        "username": username,
-        "hashed_password": hash_password(password),
-        "is_admin": is_admin
-    }
-    save_users(users)
-    return User(**users[username])
+    hashed = hash_password(password)
+    data = db_create_user(username, hashed, is_admin)
+    return User(**data)
 
 
 def delete_user(username: str) -> bool:
     """Delete a user"""
-    users = load_users()
-    if username not in users:
-        raise ValueError(f"User '{username}' not found")
-    del users[username]
-    save_users(users)
-    return True
+    return db_delete_user(username)
 
 
 def change_password(username: str, new_password: str) -> bool:
     """Change a user's password"""
-    users = load_users()
-    if username not in users:
-        raise ValueError(f"User '{username}' not found")
-    users[username]["hashed_password"] = hash_password(new_password)
-    save_users(users)
-    return True
+    hashed = hash_password(new_password)
+    return db_change_password(username, hashed)
 
 
 def list_users() -> list:
     """List all users (without password hashes)"""
-    users = load_users()
-    return [{"username": u["username"], "is_admin": u.get("is_admin", False)} for u in users.values()]
+    return db_list_users()
 
 
 def create_default_user():
     """Create default admin user if no users exist"""
-    users = load_users()
+    # First, migrate any existing users.json
+    migrate_users_from_json(USERS_FILE)
+
+    # Then create default admin if no users exist
+    users = db_list_users()
     if not users:
-        users["admin"] = {
-            "username": "admin",
-            "hashed_password": hash_password("admin"),
-            "is_admin": True
-        }
-        save_users(users)
+        hashed = hash_password("admin")
+        db_create_user("admin", hashed, is_admin=True)
         logger.info("Created default admin user (username: admin, password: admin)")
 
 
@@ -199,7 +178,3 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         )
 
     return UserInfo(username=user.username, is_admin=user.is_admin)
-
-
-# Initialize default user on module load
-create_default_user()
