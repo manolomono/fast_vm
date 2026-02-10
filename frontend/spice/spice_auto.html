@@ -108,7 +108,9 @@
                 if (vmId) {
                     console.log("Refreshing proxy for VM:", vmId);
                     // Use the main app's API endpoint
-                    var apiUrl = window.location.protocol + '//' + window.location.hostname + ':8000/api/vms/' + vmId + '/spice';
+                    // Use parent origin (the main app) for API calls, not the iframe's own location
+                    var parentOrigin = window.parent ? window.parent.location.origin : window.location.origin;
+                    var apiUrl = parentOrigin + '/api/vms/' + vmId + '/spice';
                     var fetchOptions = {};
                     if (token) {
                         fetchOptions.headers = { 'Authorization': 'Bearer ' + token };

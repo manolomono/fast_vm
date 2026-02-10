@@ -902,8 +902,9 @@ function dashboard() {
             try {
                 const info = await api(`/vms/${vm.id}/spice`);
                 const token = localStorage.getItem('token');
-                // Build the SPICE HTML5 client URL with proper parameters including vm_id and token for reconnection
-                this.consoleUrl = `/spice/spice_auto.html?host=localhost&port=${info.ws_port}&vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
+                // Use current hostname so it works when accessing from another machine
+                const spiceHost = location.hostname;
+                this.consoleUrl = `/spice/spice_auto.html?host=${spiceHost}&port=${info.ws_port}&vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
                 this.consoleVm = vm;
                 this.showConsole = true;
             } catch (err) {
