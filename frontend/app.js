@@ -1,47 +1,81 @@
 /**
  * Fast VM - Frontend principal
  *
- * Componente Alpine.js que importa modulos de:
- *   js/api.js        - Helper de llamadas API
- *   js/vms.js        - Gestion de VMs (CRUD, clone, cloud-init)
- *   js/volumes.js    - Gestion de volumenes
- *   js/monitoring.js - Monitorizacion y graficos en tiempo real
- *   js/console.js    - Consola SPICE
- *   js/backups.js    - Backup y restauracion
- *   js/users.js      - Gestion de usuarios y autenticacion
- *   js/modals.js     - HTML de modales
+ * Componente Alpine.js (funcion global dashboard()).
+ * Los metodos se importan de modulos js/*.js via window.FastVM namespace.
  */
-// Los modulos se cargan via <script> tags antes de este archivo.
-// Accedemos a ellos via window.FastVM namespace.
 
-document.addEventListener('alpine:init', () => {
+// Los modulos js/*.js se cargan antes via <script> tags.
+// Accedemos a ellos via window.FastVM.
+
+function dashboard() {
     const { api, vmMethods, volumeMethods, monitoringMethods,
             consoleMethods, backupMethods, userMethods, injectModals } = window.FastVM;
 
-    Alpine.data('vmManager', () => ({
+    return {
         // ==================== Estado ====================
-        currentView: 'vms',
+        ready: false,
+        user: null,
         vms: [],
         volumes: [],
         isos: [],
         bridges: [],
         interfaces: [],
-        backups: [],
-        users: [],
-        currentUser: null,
 
-        // Estado de modales
+        // UI - restaurar desde URL hash
+        currentView: (['dashboard','volumes','users','monitoring','audit'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'dashboard'),
+        selectedVm: null,
+        showConsole: false,
+        consoleVm: null,
+        consoleUrl: '',
+
+        // Busqueda y filtro de VMs
+        vmSearchQuery: '',
+        vmStatusFilter: 'all',
+
+        // Audit Logs
+        auditLogs: [],
+        auditTotal: 0,
+        auditPage: 0,
+
+        // Backups
+        backups: [],
+        showRestoreModal: false,
+
+        // Metricas
+        vmMetrics: {},
+        hostMetrics: { cpu_percent: 0, cpu_count: 0, memory_used_gb: 0, memory_total_gb: 0, memory_percent: 0, disk_used_gb: 0, disk_total_gb: 0, disk_percent: 0 },
+
+        // Usuarios
+        users: [],
+        passwordForm: { current_password: '', new_password: '', confirm_password: '' },
+        createUserForm: { username: '', password: '', is_admin: false },
+
+        // Clone & Cloud-init
+        cloneForm: { name: '', memory: null, cpus: null },
+        cloneSource: null,
+        cloudInitForm: {
+            hostname: '', username: 'user', password: '',
+            ssh_authorized_keys: '', packages: 'spice-vdagent qemu-guest-agent',
+            static_ip: '', gateway: '', dns: '8.8.8.8, 8.8.4.4'
+        },
+
+        // Loading
+        actionLoading: false,
+
+        // Modales
         showCreateModal: false,
         showEditModal: false,
-        showDeleteModal: false,
         showVolumeModal: false,
-        showCloneModal: false,
-        showRestoreModal: false,
-        showCloudInitModal: false,
+        showDeleteModal: false,
         showCreateUserModal: false,
-        showConsole: false,
+        showCloneModal: false,
+        showCloudInitModal: false,
+        deleteTarget: null,
+        editTarget: { memory: 0, cpus: 0, iso_path: '', secondary_iso_path: '', networks: [], volumes: [], boot_order: ['disk', 'cdrom'] },
+        selectedVolumeToAttach: '',
 
-        // Formularios
+        // Formulario de creacion
         createForm: {
             name: '', memory: 2048, cpus: 2, disk_size: 20,
             iso_path: '', secondary_iso_path: '',
@@ -49,70 +83,91 @@ document.addEventListener('alpine:init', () => {
             networks: [{ type: 'nat', model: 'virtio', port_forwards: [] }],
             boot_order: ['disk', 'cdrom']
         },
-        editTarget: null,
-        deleteTarget: null,
-        selectedVm: null,
-        cloneSource: null,
-        cloneForm: { name: '', memory: 2048, cpus: 2 },
+
         volumeForm: { name: '', size_gb: 10, format: 'qcow2' },
-        selectedVolumeToAttach: '',
-        createUserForm: { username: '', password: '', is_admin: false },
-        passwordForm: { current_password: '', new_password: '', confirm_password: '' },
-        cloudInitForm: {
-            hostname: '', username: 'user', password: '',
-            ssh_authorized_keys: '', packages: 'spice-vdagent qemu-guest-agent',
-            static_ip: '', gateway: '', dns: '8.8.8.8, 8.8.4.4'
-        },
 
-        // Estado de consola
-        consoleUrl: '',
-        consoleVm: null,
-
-        // Estado de monitorizacion
-        monitoringVmId: null,
+        // Monitorizacion
         monitoringInterval: null,
+        monitoringVmId: null,
         metricsWs: null,
         metricsWsConnected: false,
-        vmMetrics: {},
         wsHostHistory: [],
         wsVmHistory: {},
-        WS_MAX_POINTS: 60,
+        WS_MAX_POINTS: 120,
         _wsReconnectTimer: null,
         _wsReconnectAttempts: 0,
 
-        // Estado de snapshots
+        // Snapshots
         vmSnapshots: {},
         snapshotForm: { name: '', description: '' },
 
-        // UI
-        actionLoading: false,
-
         // ==================== Computed ====================
-        get runningVms() { return this.vms.filter(v => v.status === 'running'); },
-        get stoppedVms() { return this.vms.filter(v => v.status !== 'running'); },
-        get availableVolumes() { return this.volumes.filter(v => !v.attached_to); },
+        get runningVMs() { return this.vms.filter(v => v.status === 'running').length; },
+        get stoppedVMs() { return this.vms.filter(v => v.status !== 'running').length; },
+        get filteredVMs() {
+            return this.vms.filter(vm => {
+                const matchesSearch = !this.vmSearchQuery || vm.name.toLowerCase().includes(this.vmSearchQuery.toLowerCase());
+                const matchesStatus = this.vmStatusFilter === 'all' || vm.status === this.vmStatusFilter;
+                return matchesSearch && matchesStatus;
+            });
+        },
+        get availableVolumes() {
+            if (!this.editTarget) return [];
+            const attachedToThisVm = this.editTarget.volumes || [];
+            return this.volumes.filter(v => !v.attached_to && !attachedToThisVm.includes(v.id));
+        },
 
         // ==================== Inicializacion ====================
         async init() {
-            // Inyectar HTML de modales
-            const modalsEl = document.getElementById('modals');
-            if (modalsEl) injectModals();
+            const token = localStorage.getItem('token');
+            if (!token) { window.location.href = '/login.html'; return; }
 
-            // Cargar datos iniciales
-            await Promise.all([
-                this.loadVMs(),
-                this.loadVolumes(),
-                this.loadIsos(),
-                this.loadBridges(),
-                this.loadBackups(),
-                this.loadCurrentUser(),
-            ]);
+            try {
+                this.user = await api('/auth/me');
+                await this.loadData();
+                this.ready = true;
+                injectModals();
 
-            // Auto-refresh cada 5s
-            setInterval(() => this.loadVMs(), 5000);
+                // Auto-refresh cada 10s
+                setInterval(() => { this.loadVMs(); this.loadMetrics(); }, 10000);
+                this.loadMetrics();
+                if (this.user?.is_admin) this.loadUsers();
+
+                // Sincronizar currentView <-> URL hash
+                this.$watch('currentView', (val) => {
+                    const hash = val === 'dashboard' ? '' : '#' + val;
+                    if (location.hash !== '#' + val) history.replaceState(null, '', hash || location.pathname);
+                });
+                window.addEventListener('hashchange', () => {
+                    const view = location.hash.slice(1);
+                    if (['dashboard','volumes','users','monitoring','audit'].includes(view)) {
+                        this.currentView = view;
+                    } else if (!location.hash) {
+                        this.currentView = 'dashboard';
+                    }
+                });
+
+                if (this.currentView === 'monitoring') {
+                    this.$nextTick(() => this.loadMonitoringCharts());
+                }
+                if (this.currentView === 'audit' && this.user?.is_admin) {
+                    this.loadAuditLogs();
+                }
+            } catch (err) {
+                console.error('Init error:', err);
+                localStorage.removeItem('token');
+                window.location.href = '/login.html';
+            }
         },
 
         // ==================== Carga de datos ====================
+        async loadData() {
+            await Promise.all([
+                this.loadVMs(), this.loadVolumes(), this.loadIsos(),
+                this.loadBridges(), this.loadBackups()
+            ]);
+        },
+
         async loadIsos() {
             try { this.isos = await api('/isos'); }
             catch (err) { console.error('Error loading ISOs:', err); }
@@ -128,19 +183,32 @@ document.addEventListener('alpine:init', () => {
             } catch (err) { console.error('Error loading network config:', err); }
         },
 
-        async loadCurrentUser() {
-            try { this.currentUser = await api('/auth/me'); }
-            catch (err) { console.error('Error loading user info:', err); }
+        async loadMetrics() {
+            if (this.metricsWsConnected) return;
+            try { this.hostMetrics = await api('/system/metrics'); }
+            catch (err) { console.error('Error loading host metrics:', err); }
+
+            const running = this.vms.filter(v => v.status === 'running');
+            for (const vm of running) {
+                try { this.vmMetrics[vm.id] = await api(`/vms/${vm.id}/metrics`); }
+                catch (err) { /* VM may have just stopped */ }
+            }
+        },
+
+        async loadAuditLogs(page = 0) {
+            try {
+                this.auditPage = page;
+                const offset = page * 50;
+                const data = await api(`/audit-logs?limit=50&offset=${offset}`);
+                this.auditLogs = data.logs;
+                this.auditTotal = data.total;
+            } catch (err) { console.error('Error loading audit logs:', err); }
         },
 
         // ==================== Snapshots ====================
         async loadSnapshots(vmId) {
-            try {
-                this.vmSnapshots[vmId] = await api(`/vms/${vmId}/snapshots`);
-            } catch (err) {
-                console.error('Error loading snapshots:', err);
-                this.vmSnapshots[vmId] = [];
-            }
+            try { this.vmSnapshots[vmId] = await api(`/vms/${vmId}/snapshots`); }
+            catch (err) { console.error('Error loading snapshots:', err); this.vmSnapshots[vmId] = []; }
         },
 
         async createSnapshot(vmId) {
@@ -194,12 +262,12 @@ document.addEventListener('alpine:init', () => {
             return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
         },
 
-        // ==================== Metodos importados ====================
+        // ==================== Metodos importados de modulos ====================
         ...vmMethods,
         ...volumeMethods,
         ...monitoringMethods,
         ...consoleMethods,
         ...backupMethods,
         ...userMethods,
-    }));
-});
+    };
+}

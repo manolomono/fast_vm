@@ -417,6 +417,15 @@ step_install_fastvm() {
     mkdir -p "$install_dir"/{vms,images,data,backups}
     success "Directorios de datos creados"
 
+    # Descargar dependencias frontend (Alpine.js, Chart.js, Tailwind)
+    info "Descargando dependencias del frontend..."
+    if [ -x "$install_dir/frontend/vendor/download.sh" ]; then
+        bash "$install_dir/frontend/vendor/download.sh"
+        success "Dependencias frontend descargadas"
+    else
+        warn "Script de descarga no encontrado. Ejecuta: bash frontend/vendor/download.sh"
+    fi
+
     # Generar JWT secret
     local jwt_secret
     jwt_secret=$(python3 -c "import secrets; print(secrets.token_hex(32))" 2>/dev/null || openssl rand -hex 32)
