@@ -379,8 +379,9 @@ function dashboard() {
         },
 
         async loadMonitoringCharts() {
-            // Small delay to ensure DOM is ready
-            await new Promise(r => setTimeout(r, 150));
+            // Wait for Alpine to finish rendering x-show / x-for templates
+            await this.$nextTick();
+            await new Promise(r => setTimeout(r, 250));
 
             // Load initial history from REST API
             await this._fetchAndRenderCharts();
@@ -430,16 +431,25 @@ function dashboard() {
 
                 this.metricsWs.onclose = (ev) => {
                     this.metricsWsConnected = false;
-                    if (this.currentView === 'monitoring' && ev.code !== 4401) {
-                        // Auto-reconnect with exponential backoff
-                        const delay = Math.min(1000 * Math.pow(2, this._wsReconnectAttempts || 0), 16000);
-                        this._wsReconnectAttempts = (this._wsReconnectAttempts || 0) + 1;
-                        console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${this._wsReconnectAttempts})`);
-                        this._wsReconnectTimer = setTimeout(() => this._connectMetricsWs(), delay);
-                    } else if (ev.code === 4401) {
+                    if (ev.code === 4401) {
                         console.warn('WebSocket auth failed, redirecting to login');
                         localStorage.removeItem('token');
                         window.location.href = '/login.html';
+                        return;
+                    }
+                    if (this.currentView === 'monitoring') {
+                        this._wsReconnectAttempts = (this._wsReconnectAttempts || 0) + 1;
+                        if (this._wsReconnectAttempts <= 3) {
+                            // Auto-reconnect with exponential backoff (up to 3 attempts)
+                            const delay = Math.min(1000 * Math.pow(2, this._wsReconnectAttempts - 1), 8000);
+                            console.log(`WebSocket closed, reconnecting in ${delay}ms (attempt ${this._wsReconnectAttempts})`);
+                            this._wsReconnectTimer = setTimeout(() => this._connectMetricsWs(), delay);
+                        } else {
+                            // After 3 failed reconnects, fall back to REST polling
+                            console.log('WebSocket reconnect failed, falling back to polling');
+                            this._wsReconnectAttempts = 0;
+                            this._startPollingFallback();
+                        }
                     }
                 };
 
@@ -564,7 +574,13 @@ function dashboard() {
             if (!canvas || !canvas.getContext) return;
 
             const ctx = canvas.getContext('2d');
-            if (!ctx || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
+            if (!ctx) return;
+
+            // If canvas is hidden (display:none from x-show), defer rendering
+            if (!canvas.offsetParent && !_chartInstances[canvasId]) {
+                setTimeout(() => this.renderChart(canvasId, labels, datasets, opts), 200);
+                return;
+            }
 
             // Strip Alpine proxies from data to prevent Chart.js stack overflow
             const rawLabels = this._rawCopy(labels);
