@@ -217,7 +217,7 @@ class VNCConnectionInfo(BaseModel):
 
 class SpiceConnectionInfo(BaseModel):
     spice_port: int
-    ws_port: int
+    ws_port: Optional[int] = None  # Legacy: no longer needed with built-in proxy
     ws_url: str
     status: str
 

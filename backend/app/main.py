@@ -999,6 +999,105 @@ async def periodic_cleanup():
 
 
 
+# ==================== WebSocket SPICE Proxy ====================
+
+
+@app.websocket("/ws/spice/{vm_id}")
+async def websocket_spice_proxy(websocket: WebSocket, vm_id: str):
+    """WebSocket-to-TCP proxy for SPICE console access.
+    Eliminates the need for external websockify ports.
+    Requires authentication via ?token=JWT query parameter.
+    """
+    # Authenticate via query parameter
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401, reason="Missing authentication token")
+        return
+
+    from .auth import verify_token, get_user as auth_get_user
+    payload_data = verify_token(token)
+    if not payload_data or not payload_data.get("sub"):
+        await websocket.close(code=4401, reason="Invalid or expired token")
+        return
+    if not auth_get_user(payload_data["sub"]):
+        await websocket.close(code=4401, reason="User not found")
+        return
+
+    # Validate VM exists and is running
+    if vm_id not in vm_manager.vms:
+        await websocket.close(code=4404, reason="VM not found")
+        return
+
+    vm = vm_manager.vms[vm_id]
+    vm_manager._update_vm_status(vm_id)
+
+    if vm.get('status') != 'running':
+        await websocket.close(code=4400, reason="VM is not running")
+        return
+
+    spice_port = vm.get('spice_port')
+    if not spice_port:
+        await websocket.close(code=4400, reason="SPICE port not configured")
+        return
+
+    # Accept the WebSocket connection
+    await websocket.accept(subprotocol='binary')
+
+    # Create TCP connection to the SPICE port
+    try:
+        reader, writer = await asyncio.open_connection('127.0.0.1', spice_port)
+    except Exception as e:
+        logger.error(f"Failed to connect to SPICE port {spice_port} for VM {vm_id}: {e}")
+        await websocket.close(code=4500, reason="Failed to connect to VM display")
+        return
+
+    logger.info(f"SPICE proxy connected: VM {vm_id}, SPICE port {spice_port}")
+
+    async def ws_to_tcp():
+        """Forward WebSocket binary data to TCP"""
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                writer.write(data)
+                await writer.drain()
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    async def tcp_to_ws():
+        """Forward TCP data to WebSocket"""
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+        except Exception:
+            pass
+
+    # Run both directions concurrently
+    ws_task = asyncio.create_task(ws_to_tcp())
+    tcp_task = asyncio.create_task(tcp_to_ws())
+
+    try:
+        done, pending = await asyncio.wait(
+            [ws_task, tcp_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        logger.info(f"SPICE proxy disconnected: VM {vm_id}")
+
+
 # ==================== WebSocket Metrics ====================
 
 

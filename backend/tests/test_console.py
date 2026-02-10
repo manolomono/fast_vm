@@ -54,44 +54,40 @@ async def test_spice_connect_vm_stopped(app_client, auth_headers):
 
 
 async def test_spice_connect_success(app_client, auth_headers):
-    """SPICE connection should return ws_port when proxy starts successfully"""
+    """SPICE connection should return connection info via built-in proxy"""
     from app.main import vm_manager
 
     vm_id = _create_running_vm(vm_manager)
 
     # Mock _update_vm_status to not change the status
+    # Mock _is_port_in_use to simulate SPICE port is listening
     with patch.object(vm_manager, '_update_vm_status'):
-        # Mock the spice proxy manager to return success
-        with patch.object(vm_manager.spice_proxy_manager, 'get_proxy_status', return_value={'status': 'stopped'}):
-            with patch.object(vm_manager.spice_proxy_manager, 'start_proxy', return_value={'ws_port': 6800, 'proxy_pid': 12345}):
-                response = await app_client.get(f"/api/vms/{vm_id}/spice", headers=auth_headers)
+        with patch.object(vm_manager, '_is_port_in_use', return_value=True):
+            response = await app_client.get(f"/api/vms/{vm_id}/spice", headers=auth_headers)
 
     assert response.status_code == 200
     data = response.json()
-    assert data["ws_port"] == 6800
     assert data["spice_port"] == 5930
     assert data["status"] == "ready"
     assert "ws_url" in data
+    assert f"/ws/spice/{vm_id}" in data["ws_url"]
 
     # Cleanup
     del vm_manager.vms[vm_id]
 
 
-async def test_spice_connect_proxy_already_running(app_client, auth_headers):
-    """SPICE connection should reuse existing proxy"""
+async def test_spice_connect_port_not_ready(app_client, auth_headers):
+    """SPICE connection should 400 if SPICE port is not listening"""
     from app.main import vm_manager
 
     vm_id = _create_running_vm(vm_manager)
 
     with patch.object(vm_manager, '_update_vm_status'):
-        with patch.object(vm_manager.spice_proxy_manager, 'get_proxy_status',
-                          return_value={'status': 'running', 'ws_port': 6801, 'pid': 11111}):
+        with patch.object(vm_manager, '_is_port_in_use', return_value=False):
             response = await app_client.get(f"/api/vms/{vm_id}/spice", headers=auth_headers)
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ws_port"] == 6801
-    assert data["status"] == "ready"
+    assert response.status_code == 400
+    assert "not responding" in response.json()["detail"].lower()
 
     del vm_manager.vms[vm_id]
 

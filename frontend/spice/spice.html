@@ -186,10 +186,13 @@
             }
 
             function display_hostname() {
-                var title = new URLSearchParams(window.location.search);
-                name = title.getAll('title');
-                name = name.split('(')[0];
-                document.getElementById('hostname').innerHTML = (name);
+                try {
+                    var params = new URLSearchParams(window.location.search);
+                    var title = params.get('title') || 'Host Console';
+                    document.getElementById('hostname').textContent = title;
+                } catch (e) {
+                    document.getElementById('hostname').textContent = 'Host Console';
+                }
             }
 
             function open_nav() {

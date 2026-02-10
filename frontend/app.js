@@ -900,11 +900,12 @@ function dashboard() {
         // Console
         async openConsole(vm) {
             try {
-                const info = await api(`/vms/${vm.id}/spice`);
+                // Verify VM is running and has SPICE configured
+                await api(`/vms/${vm.id}/spice`);
                 const token = localStorage.getItem('token');
-                // Use current hostname so it works when accessing from another machine
-                const spiceHost = location.hostname;
-                this.consoleUrl = `/spice/spice_auto.html?host=${spiceHost}&port=${info.ws_port}&vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
+                // Connect through the main server's built-in WebSocket proxy
+                // No external websockify ports needed - everything goes through port 8000
+                this.consoleUrl = `/spice/spice_auto.html?vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
                 this.consoleVm = vm;
                 this.showConsole = true;
             } catch (err) {

@@ -257,12 +257,12 @@ class VMManager:
         return 5900
 
     def _get_free_spice_port(self) -> int:
-        """Get a free SPICE port starting from 5800"""
+        """Get a free SPICE port starting from 5800, checking actual availability"""
         used_ports = {vm.get('spice_port') for vm in self.vms.values() if vm.get('spice_port')}
         for port in range(5800, 5899):
-            if port not in used_ports:
+            if port not in used_ports and not self._is_port_in_use(port):
                 return port
-        return 5800
+        raise RuntimeError("No free SPICE ports available (5800-5899)")
 
     def _generate_mac_address(self) -> str:
         """Generate a random MAC address for QEMU"""
@@ -272,6 +272,16 @@ class VMManager:
                random.randint(0x00, 0xff),
                random.randint(0x00, 0xff)]
         return ':'.join(map(lambda x: "%02x" % x, mac))
+
+    def _is_port_in_use(self, port: int) -> bool:
+        """Check if a port is currently in use on the system"""
+        try:
+            for conn in psutil.net_connections():
+                if conn.laddr.port == port:
+                    return True
+        except (psutil.AccessDenied, OSError):
+            pass
+        return False
 
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running"""
@@ -528,8 +538,8 @@ class VMManager:
             "-drive", f"file={vm['disk_path']},format=qcow2,if=none,id=disk0",
             "-device", "ahci,id=ahci",
             "-device", "ide-hd,drive=disk0,bus=ahci.0",
-            # SPICE configuration
-            "-spice", f"port={spice_port},disable-ticketing=on",
+            # SPICE configuration - bind to localhost only (proxied via FastAPI WebSocket)
+            "-spice", f"port={spice_port},addr=127.0.0.1,disable-ticketing=on",
             # QXL display for best SPICE experience
             "-device", "qxl-vga,vgamem_mb=64",
             # SPICE agent channel for clipboard, mouse, and display resize
@@ -1005,7 +1015,10 @@ class VMManager:
         }
 
     def get_spice_connection(self, vm_id: str) -> Dict:
-        """Get SPICE connection info, starting proxy if needed"""
+        """Get SPICE connection info for a VM.
+        Console access is now proxied through the main FastAPI server
+        via /ws/spice/{vm_id}, so external websockify ports are no longer needed.
+        """
         if vm_id not in self.vms:
             raise ValueError(f"VM {vm_id} not found")
 
@@ -1019,31 +1032,13 @@ class VMManager:
         if not spice_port:
             raise ValueError("VM does not have SPICE port configured")
 
-        # Check if proxy already running
-        proxy_status = self.spice_proxy_manager.get_proxy_status(vm_id)
-
-        if proxy_status['status'] == 'running':
-            ws_port = proxy_status['ws_port']
-        else:
-            # Start new proxy
-            used_ws_ports = {
-                v.get('spice_ws_port') for v in self.vms.values()
-                if v.get('spice_ws_port')
-            }
-
-            proxy_info = self.spice_proxy_manager.start_proxy(
-                vm_id, spice_port, used_ws_ports
-            )
-
-            ws_port = proxy_info['ws_port']
-            vm['spice_ws_port'] = ws_port
-            vm['spice_proxy_pid'] = proxy_info['proxy_pid']
-            self._save_vms()
+        # Verify the SPICE port is actually listening
+        if not self._is_port_in_use(spice_port):
+            raise ValueError(f"SPICE port {spice_port} is not responding. The VM display may not be ready yet.")
 
         return {
             'spice_port': spice_port,
-            'ws_port': ws_port,
-            'ws_url': f"ws://localhost:{ws_port}",
+            'ws_url': f"/ws/spice/{vm_id}",
             'status': 'ready'
         }
 
