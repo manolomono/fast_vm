@@ -1,14 +1,13 @@
 // Metodos de backup y restauracion
-import { api } from './api.js';
-
-export const backupMethods = {
+window.FastVM = window.FastVM || {};
+window.FastVM.backupMethods = {
     async backupVM(vm) {
         if (vm.status === 'running') {
             this.showToast('Stop the VM first to create a backup', 'error');
             return;
         }
         try {
-            const result = await api(`/vms/${vm.id}/backup`, { method: 'POST' });
+            const result = await FastVM.api(`/vms/${vm.id}/backup`, { method: 'POST' });
             this.showToast(`Backup created: ${result.backup_name}`, 'success');
             await this.loadBackups();
         } catch (err) {
@@ -36,7 +35,7 @@ export const backupMethods = {
     },
 
     async loadBackups() {
-        try { this.backups = await api('/backups'); }
+        try { this.backups = await FastVM.api('/backups'); }
         catch (err) { console.error('Error loading backups:', err); }
     },
 

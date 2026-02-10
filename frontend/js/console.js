@@ -1,10 +1,9 @@
 // Metodos de consola VM (SPICE)
-import { api } from './api.js';
-
-export const consoleMethods = {
+window.FastVM = window.FastVM || {};
+window.FastVM.consoleMethods = {
     async openConsole(vm) {
         try {
-            await api(`/vms/${vm.id}/spice`);
+            await FastVM.api(`/vms/${vm.id}/spice`);
             const token = localStorage.getItem('token');
             this.consoleUrl = `/spice/spice_auto.html?vm_id=${vm.id}&token=${encodeURIComponent(token)}`;
             this.consoleVm = vm;

@@ -1,5 +1,6 @@
 // API helper con autenticacion JWT
-export async function api(endpoint, options = {}) {
+window.FastVM = window.FastVM || {};
+window.FastVM.api = async function api(endpoint, options = {}) {
     const token = localStorage.getItem('token');
     const headers = {
         'Content-Type': 'application/json',
@@ -25,4 +26,4 @@ export async function api(endpoint, options = {}) {
     }
 
     return response.json();
-}
+};

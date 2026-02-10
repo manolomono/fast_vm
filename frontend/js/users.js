@@ -1,15 +1,14 @@
 // Metodos de gestion de usuarios
-import { api } from './api.js';
-
-export const userMethods = {
+window.FastVM = window.FastVM || {};
+window.FastVM.userMethods = {
     async loadUsers() {
-        try { this.users = await api('/auth/users'); }
+        try { this.users = await FastVM.api('/auth/users'); }
         catch (err) { console.error('Error loading users:', err); }
     },
 
     async createUser() {
         try {
-            await api('/auth/users', { method: 'POST', body: JSON.stringify(this.createUserForm) });
+            await FastVM.api('/auth/users', { method: 'POST', body: JSON.stringify(this.createUserForm) });
             this.showToast('User created successfully', 'success');
             this.showCreateUserModal = false;
             this.createUserForm = { username: '', password: '', is_admin: false };
@@ -26,7 +25,7 @@ export const userMethods = {
 
     async deleteUser(username) {
         try {
-            await api(`/auth/users/${username}`, { method: 'DELETE' });
+            await FastVM.api(`/auth/users/${username}`, { method: 'DELETE' });
             this.showToast('User deleted', 'success');
             await this.loadUsers();
         } catch (err) {
@@ -40,7 +39,7 @@ export const userMethods = {
             return;
         }
         try {
-            await api('/auth/change-password', {
+            await FastVM.api('/auth/change-password', {
                 method: 'POST',
                 body: JSON.stringify({
                     current_password: this.passwordForm.current_password,

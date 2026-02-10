@@ -1,10 +1,10 @@
 // Metodos de monitorizacion y graficos
-import { api } from './api.js';
+window.FastVM = window.FastVM || {};
 
 // Instancias de Chart.js fuera de Alpine para evitar wrapping de Proxy
-export const _chartInstances = {};
+const _chartInstances = {};
 
-export const monitoringMethods = {
+window.FastVM.monitoringMethods = {
     openVmMonitoring(vm) {
         this.monitoringVmId = vm.id;
         this.destroyAllCharts();
@@ -143,7 +143,7 @@ export const monitoringMethods = {
     async _fetchAndRenderCharts() {
         if (this.currentView !== 'monitoring') return;
         try {
-            const data = await api('/metrics/history');
+            const data = await FastVM.api('/metrics/history');
             if (data.host) this.wsHostHistory = [...data.host];
             if (data.vms) {
                 this.wsVmHistory = {};

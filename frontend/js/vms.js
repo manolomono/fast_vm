@@ -1,9 +1,8 @@
 // Metodos de gestion de VMs
-import { api } from './api.js';
-
-export const vmMethods = {
+window.FastVM = window.FastVM || {};
+window.FastVM.vmMethods = {
     async loadVMs() {
-        try { this.vms = await api('/vms'); }
+        try { this.vms = await FastVM.api('/vms'); }
         catch (err) { console.error('Error loading VMs:', err); }
     },
 
@@ -11,7 +10,7 @@ export const vmMethods = {
         if (this.actionLoading) return;
         this.actionLoading = true;
         try {
-            await api(`/vms/${id}/start`, { method: 'POST' });
+            await FastVM.api(`/vms/${id}/start`, { method: 'POST' });
             this.showToast('VM started successfully', 'success');
             await this.loadVMs();
         } catch (err) {
@@ -23,7 +22,7 @@ export const vmMethods = {
         if (this.actionLoading) return;
         this.actionLoading = true;
         try {
-            await api(`/vms/${id}/stop`, { method: 'POST' });
+            await FastVM.api(`/vms/${id}/stop`, { method: 'POST' });
             this.showToast('VM stopped successfully', 'success');
             await this.loadVMs();
             if (this.consoleVm?.id === id) this.closeConsole();
@@ -39,7 +38,7 @@ export const vmMethods = {
             const data = { ...this.createForm };
             if (!data.iso_path) delete data.iso_path;
             if (!data.secondary_iso_path) delete data.secondary_iso_path;
-            await api('/vms', { method: 'POST', body: JSON.stringify(data) });
+            await FastVM.api('/vms', { method: 'POST', body: JSON.stringify(data) });
             this.showToast('VM created successfully', 'success');
             this.showCreateModal = false;
             this.resetCreateForm();
@@ -62,7 +61,7 @@ export const vmMethods = {
                 networks: this.editTarget.networks,
                 boot_order: this.editTarget.boot_order
             };
-            await api(`/vms/${this.editTarget.id}`, { method: 'PUT', body: JSON.stringify(data) });
+            await FastVM.api(`/vms/${this.editTarget.id}`, { method: 'PUT', body: JSON.stringify(data) });
             this.showToast('VM updated successfully', 'success');
             this.showEditModal = false;
             this.editTarget = null;
@@ -76,7 +75,7 @@ export const vmMethods = {
         if (!this.deleteTarget || this.actionLoading) return;
         this.actionLoading = true;
         try {
-            await api(`/vms/${this.deleteTarget.id}`, { method: 'DELETE' });
+            await FastVM.api(`/vms/${this.deleteTarget.id}`, { method: 'DELETE' });
             this.showToast('VM deleted successfully', 'success');
             this.showDeleteModal = false;
             this.deleteTarget = null;
@@ -99,7 +98,7 @@ export const vmMethods = {
             const data = { name: this.cloneForm.name };
             if (this.cloneForm.memory) data.memory = this.cloneForm.memory;
             if (this.cloneForm.cpus) data.cpus = this.cloneForm.cpus;
-            await api(`/vms/${this.cloneSource.id}/clone`, { method: 'POST', body: JSON.stringify(data) });
+            await FastVM.api(`/vms/${this.cloneSource.id}/clone`, { method: 'POST', body: JSON.stringify(data) });
             this.showToast('VM cloned successfully', 'success');
             this.showCloneModal = false;
             this.cloneSource = null;
@@ -125,7 +124,7 @@ export const vmMethods = {
             if (this.cloudInitForm.static_ip) data.static_ip = this.cloudInitForm.static_ip;
             if (this.cloudInitForm.gateway) data.gateway = this.cloudInitForm.gateway;
 
-            await api('/cloudinit', { method: 'POST', body: JSON.stringify(data) });
+            await FastVM.api('/cloudinit', { method: 'POST', body: JSON.stringify(data) });
             this.showToast(`Cloud-init ISO created for '${data.hostname}'. Use it as secondary ISO when creating a VM.`, 'success');
             this.showCloudInitModal = false;
             this.cloudInitForm = {

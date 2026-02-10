@@ -11,16 +11,13 @@
  *   js/users.js      - Gestion de usuarios y autenticacion
  *   js/modals.js     - HTML de modales
  */
-import { api } from './js/api.js';
-import { vmMethods } from './js/vms.js';
-import { volumeMethods } from './js/volumes.js';
-import { monitoringMethods } from './js/monitoring.js';
-import { consoleMethods } from './js/console.js';
-import { backupMethods } from './js/backups.js';
-import { userMethods } from './js/users.js';
-import { injectModals } from './js/modals.js';
+// Los modulos se cargan via <script> tags antes de este archivo.
+// Accedemos a ellos via window.FastVM namespace.
 
 document.addEventListener('alpine:init', () => {
+    const { api, vmMethods, volumeMethods, monitoringMethods,
+            consoleMethods, backupMethods, userMethods, injectModals } = window.FastVM;
+
     Alpine.data('vmManager', () => ({
         // ==================== Estado ====================
         currentView: 'vms',
