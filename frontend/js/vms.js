@@ -49,7 +49,8 @@ window.FastVM.vmMethods = {
     },
 
     async updateVM() {
-        if (!this.editTarget) return;
+        if (!this.editTarget || this.actionLoading) return;
+        this.actionLoading = true;
         try {
             const data = {
                 memory: this.editTarget.memory,
@@ -68,7 +69,7 @@ window.FastVM.vmMethods = {
             await this.loadVMs();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 
     async deleteVM() {
@@ -93,7 +94,8 @@ window.FastVM.vmMethods = {
     },
 
     async cloneVM() {
-        if (!this.cloneSource) return;
+        if (!this.cloneSource || this.actionLoading) return;
+        this.actionLoading = true;
         try {
             const data = { name: this.cloneForm.name };
             if (this.cloneForm.memory) data.memory = this.cloneForm.memory;
@@ -105,7 +107,7 @@ window.FastVM.vmMethods = {
             await this.loadVMs();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 
     // Cloud-init

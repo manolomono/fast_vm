@@ -149,12 +149,27 @@ def create_spice_ws_route(app):
         # Accept the WebSocket connection
         await websocket.accept(subprotocol='binary')
 
-        # Create TCP connection to the SPICE port
-        try:
-            reader, writer = await asyncio.open_connection('127.0.0.1', spice_port)
-        except Exception as e:
-            logger.error(f"Failed to connect to SPICE port {spice_port} for VM {vm_id}: {e}")
-            await websocket.close(code=4500, reason="Failed to connect to VM display")
+        # Create TCP connection to the SPICE port with retry
+        reader = writer = None
+        for attempt in range(3):
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection('127.0.0.1', spice_port),
+                    timeout=5.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                logger.warning(f"SPICE connect timeout (attempt {attempt+1}/3) VM {vm_id} port {spice_port}")
+            except ConnectionRefusedError:
+                logger.warning(f"SPICE port {spice_port} refused (attempt {attempt+1}/3) VM {vm_id} - display may not be ready")
+            except OSError as e:
+                logger.warning(f"SPICE connect OS error (attempt {attempt+1}/3) VM {vm_id}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(1)
+
+        if reader is None or writer is None:
+            logger.error(f"Failed to connect to SPICE port {spice_port} for VM {vm_id} after 3 attempts")
+            await websocket.close(code=4500, reason=f"Cannot reach VM display on port {spice_port}. The VM may still be booting - try again in a few seconds.")
             return
 
         logger.info(f"SPICE proxy connected: VM {vm_id}, SPICE port {spice_port}")
@@ -191,6 +206,10 @@ def create_spice_ws_route(app):
             )
             for task in pending:
                 task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         finally:
             writer.close()
             try:

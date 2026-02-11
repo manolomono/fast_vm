@@ -5,6 +5,7 @@ import psutil
 import uuid
 import random
 import re
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -35,6 +36,9 @@ class VMManager:
         self.volumes_dir.mkdir(parents=True, exist_ok=True)
         self.backups_dir = self.vms_dir.parent / "backups"
         self.backups_dir.mkdir(parents=True, exist_ok=True)
+
+        # Lock to protect concurrent JSON config read/write
+        self._config_lock = threading.Lock()
 
         self.vms = self._load_vms()
         self.volumes = self._load_volumes()
@@ -232,9 +236,10 @@ class VMManager:
         return {}
 
     def _save_vms(self):
-        """Save VMs configuration to disk"""
-        with open(self.config_file, 'w') as f:
-            json.dump(self.vms, f, indent=2)
+        """Save VMs configuration to disk (thread-safe)"""
+        with self._config_lock:
+            with open(self.config_file, 'w') as f:
+                json.dump(self.vms, f, indent=2)
 
     def _load_volumes(self) -> Dict:
         """Load volumes configuration from disk"""
@@ -244,9 +249,10 @@ class VMManager:
         return {}
 
     def _save_volumes(self):
-        """Save volumes configuration to disk"""
-        with open(self.volumes_file, 'w') as f:
-            json.dump(self.volumes, f, indent=2)
+        """Save volumes configuration to disk (thread-safe)"""
+        with self._config_lock:
+            with open(self.volumes_file, 'w') as f:
+                json.dump(self.volumes, f, indent=2)
 
     def _get_free_vnc_port(self) -> int:
         """Get a free VNC port starting from 5900"""

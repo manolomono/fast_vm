@@ -7,6 +7,8 @@ window.FastVM.volumeMethods = {
     },
 
     async createVolume() {
+        if (this.actionLoading) return;
+        this.actionLoading = true;
         try {
             await FastVM.api('/volumes', { method: 'POST', body: JSON.stringify(this.volumeForm) });
             this.showToast('Volume created successfully', 'success');
@@ -15,18 +17,20 @@ window.FastVM.volumeMethods = {
             await this.loadVolumes();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 
     async deleteVolume(vol) {
         if (!confirm(`Delete volume "${vol.name}"?`)) return;
+        if (this.actionLoading) return;
+        this.actionLoading = true;
         try {
             await FastVM.api(`/volumes/${vol.id}`, { method: 'DELETE' });
             this.showToast('Volume deleted', 'success');
             await this.loadVolumes();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 
     getVolumeName(volId) {
@@ -36,6 +40,8 @@ window.FastVM.volumeMethods = {
 
     async attachVolume() {
         if (!this.selectedVolumeToAttach || !this.editTarget) return;
+        if (this.actionLoading) return;
+        this.actionLoading = true;
         try {
             await FastVM.api(`/vms/${this.editTarget.id}/volumes/${this.selectedVolumeToAttach}`, { method: 'POST' });
             this.showToast('Volume attached', 'success');
@@ -46,11 +52,13 @@ window.FastVM.volumeMethods = {
             await this.loadVMs();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 
     async detachVolume(volId) {
         if (!this.editTarget) return;
+        if (this.actionLoading) return;
+        this.actionLoading = true;
         try {
             await FastVM.api(`/vms/${this.editTarget.id}/volumes/${volId}`, { method: 'DELETE' });
             this.showToast('Volume detached', 'success');
@@ -59,6 +67,6 @@ window.FastVM.volumeMethods = {
             await this.loadVMs();
         } catch (err) {
             this.showToast(err.message, 'error');
-        }
+        } finally { this.actionLoading = false; }
     },
 };

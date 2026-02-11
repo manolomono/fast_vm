@@ -61,12 +61,27 @@ def _preflight_checks():
         pass
 
 
+def _sync_vm_states():
+    """Sync VM states on startup: mark VMs with dead/zombie PIDs as stopped"""
+    updated = 0
+    for vm_id in list(vm_manager.vms.keys()):
+        vm_manager._update_vm_status(vm_id)
+        if vm_manager.vms[vm_id].get('status') == 'stopped' and vm_manager.vms[vm_id].get('pid') is None:
+            updated += 1
+    if updated:
+        logger.info(f"Startup sync: marked {updated} VM(s) as stopped (stale PIDs)")
+    else:
+        logger.info("Startup sync: all VM states consistent")
+
+
 async def periodic_cleanup():
     """Limpieza periodica: proxies huerfanos, metricas antiguas, logs de auditoria"""
     while True:
         await asyncio.sleep(300)
         try:
             vm_manager.vnc_proxy_manager.cleanup_orphaned_proxies()
+            for vm_id in list(vm_manager.vms.keys()):
+                vm_manager._update_vm_status(vm_id)
             cleanup_old_metrics(24)
             cleanup_old_audit_logs(90)
         except Exception as e:
@@ -82,6 +97,7 @@ async def lifespan(app_instance: FastAPI):
     init_db()
     create_default_user()
     _preflight_checks()
+    _sync_vm_states()
 
     from .routers.metrics import collect_metrics_task
     asyncio.create_task(collect_metrics_task())
