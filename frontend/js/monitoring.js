@@ -120,8 +120,11 @@ window.FastVM.monitoringMethods = {
             this.wsVmHistory[vmId].push(point);
             if (this.wsVmHistory[vmId].length > this.WS_MAX_POINTS) this.wsVmHistory[vmId].shift();
         }
+        // Only clean up VMs confirmed as stopped — don't delete history just because
+        // a VM is missing from one WS message (happens during process initialization)
+        const runningVmIds = new Set(this.vms.filter(v => v.status === 'running').map(v => v.id));
         for (const vmId of Object.keys(this.wsVmHistory)) {
-            if (!data.vms || !(vmId in data.vms)) delete this.wsVmHistory[vmId];
+            if (!runningVmIds.has(vmId)) delete this.wsVmHistory[vmId];
         }
         for (const [vmId, point] of Object.entries(data.vms || {})) {
             this.vmMetrics[vmId] = {
@@ -130,13 +133,17 @@ window.FastVM.monitoringMethods = {
             };
         }
 
+        // Deep-copy to strip Alpine proxies before passing to Chart.js
+        const hostData = this._rawCopy(this.wsHostHistory);
+        const vmData = this._rawCopy(this.wsVmHistory);
+
         if (!this.monitoringVmId) {
-            this.renderHostCharts(this.wsHostHistory);
-            this.renderVmCharts(this.wsVmHistory);
-        } else {
-            const vmData = {};
-            if (this.wsVmHistory[this.monitoringVmId]) vmData[this.monitoringVmId] = this.wsVmHistory[this.monitoringVmId];
+            this.renderHostCharts(hostData);
             this.renderVmCharts(vmData);
+        } else {
+            const singleVm = {};
+            if (vmData[this.monitoringVmId]) singleVm[this.monitoringVmId] = vmData[this.monitoringVmId];
+            this.renderVmCharts(singleVm);
         }
     },
 

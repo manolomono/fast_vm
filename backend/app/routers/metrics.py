@@ -120,11 +120,23 @@ async def collect_metrics_task():
                         proc = psutil.Process(pid)
                         vm_procs[vm_id] = proc
                         proc.cpu_percent(interval=0)
+                        mem_info = proc.memory_info()
+                        mem_mb = round(mem_info.rss / (1024 * 1024), 1)
+                        configured_mb = vm.get('memory', 1)
                         try:
                             io = proc.io_counters()
                             vm_prev_io[vm_id] = (io.read_bytes, io.write_bytes)
                         except (psutil.AccessDenied, AttributeError):
                             vm_prev_io[vm_id] = (0, 0)
+                        # Store initial point with cpu=0 (baseline not yet available)
+                        if vm_id not in metrics_history["vms"]:
+                            metrics_history["vms"][vm_id] = deque(maxlen=METRICS_HISTORY_SIZE)
+                        vm_mem_pct = round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0
+                        metrics_history["vms"][vm_id].append({
+                            "t": timestamp, "cpu": 0.0, "mem_mb": mem_mb,
+                            "mem_pct": vm_mem_pct, "io_r": 0.0, "io_w": 0.0,
+                        })
+                        save_vm_metrics(timestamp, vm_id, 0.0, mem_mb, vm_mem_pct, 0.0, 0.0)
                         continue
 
                     proc = vm_procs[vm_id]
@@ -247,11 +259,22 @@ def create_metrics_ws_route(app):
                                 proc = psutil.Process(pid)
                                 vm_procs[vid] = proc
                                 proc.cpu_percent(interval=0)
+                                mem_info = proc.memory_info()
+                                mem_mb = round(mem_info.rss / (1024 * 1024), 1)
+                                configured_mb = vm.get('memory', 1)
                                 try:
                                     io = proc.io_counters()
                                     vm_prev_io[vid] = (io.read_bytes, io.write_bytes)
                                 except (psutil.AccessDenied, AttributeError):
                                     vm_prev_io[vid] = (0, 0)
+                                # Send initial point with cpu=0 (baseline not yet available)
+                                # so frontend knows this VM is active
+                                payload_data["vms"][vid] = {
+                                    "t": timestamp, "cpu": 0.0,
+                                    "mem_mb": mem_mb,
+                                    "mem_pct": round(mem_mb / configured_mb * 100, 1) if configured_mb > 0 else 0,
+                                    "io_r": 0.0, "io_w": 0.0,
+                                }
                                 continue
 
                             proc = vm_procs[vid]
