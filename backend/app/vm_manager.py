@@ -595,6 +595,11 @@ class VMManager:
         has_iso = vm.get('iso_path') and os.path.exists(vm['iso_path'])
         has_secondary_iso = vm.get('secondary_iso_path') and os.path.exists(vm['secondary_iso_path'])
 
+        # Auto-detect Windows VMs and mount spice-guest-tools if available
+        iso_name = os.path.basename(vm.get('iso_path', '')).lower() if vm.get('iso_path') else ''
+        is_likely_windows = any(w in iso_name for w in ['win', 'windows', 'w10', 'w11'])
+        has_spice_tools = self.spice_tools_iso.exists()
+
         if has_iso or has_secondary_iso:
             # Use IDE controller for CD-ROMs for better compatibility
             cd_index = 0
@@ -608,6 +613,17 @@ class VMManager:
                 qemu_cmd.extend([
                     "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
                 ])
+                cd_index += 1
+            # Mount spice-guest-tools ISO for Windows VMs (as additional CD-ROM)
+            if is_likely_windows and has_spice_tools and not has_secondary_iso:
+                qemu_cmd.extend([
+                    "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index}"
+                ])
+        elif is_likely_windows and has_spice_tools:
+            # VM has no ISOs but is Windows - still mount spice-guest-tools
+            qemu_cmd.extend([
+                "-drive", f"file={self.spice_tools_iso},media=cdrom,index=0"
+            ])
 
         # Add boot order
         boot_order = vm.get('boot_order', ['disk', 'cdrom'])
@@ -1057,6 +1073,48 @@ class VMManager:
             'download_url': 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe'
         }
 
+    def download_spice_guest_tools(self) -> Dict:
+        """Download spice-guest-tools ISO for Windows VMs"""
+        if self.spice_tools_iso.exists():
+            return {'status': 'already_exists', 'path': str(self.spice_tools_iso)}
+
+        self.spice_tools_iso.parent.mkdir(parents=True, exist_ok=True)
+        url = 'https://www.spice-space.org/download/windows/spice-guest-tools/spice-guest-tools-latest.exe'
+        tmp_path = self.spice_tools_iso.parent / "spice-guest-tools-latest.exe"
+
+        try:
+            import urllib.request
+            logger.info(f"Downloading spice-guest-tools from {url}")
+            urllib.request.urlretrieve(url, str(tmp_path))
+
+            # Create an ISO containing the exe for easy mounting in Windows VMs
+            for tool in ["genisoimage", "mkisofs", "xorriso"]:
+                try:
+                    if tool == "xorriso":
+                        cmd = [tool, "-as", "genisoimage"]
+                    else:
+                        cmd = [tool]
+                    cmd.extend([
+                        "-o", str(self.spice_tools_iso),
+                        "-volid", "SPICE_TOOLS",
+                        "-joliet", "-rock",
+                        str(tmp_path)
+                    ])
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    tmp_path.unlink(missing_ok=True)
+                    return {'status': 'downloaded', 'path': str(self.spice_tools_iso)}
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+
+            # No ISO tool available - keep the exe as-is renamed to .iso
+            # QEMU can still mount it, but Windows won't auto-see it as a CDROM
+            tmp_path.unlink(missing_ok=True)
+            raise ValueError("No ISO generation tool found (genisoimage/mkisofs/xorriso)")
+
+        except Exception as e:
+            tmp_path.unlink(missing_ok=True)
+            raise ValueError(f"Failed to download spice-guest-tools: {e}")
+
     # ==================== Clone ====================
 
     def clone_vm(self, vm_id: str, name: str, memory: Optional[int] = None, cpus: Optional[int] = None) -> VMInfo:
@@ -1169,7 +1227,9 @@ class VMManager:
 
             # Run commands
             user_data_lines.append("runcmd:")
-            user_data_lines.append("  - systemctl enable spice-vdagent 2>/dev/null || true")
+            user_data_lines.append("  - apt-get install -y spice-vdagent qemu-guest-agent 2>/dev/null || yum install -y spice-vdagent qemu-guest-agent 2>/dev/null || true")
+            user_data_lines.append("  - systemctl enable --now spice-vdagent 2>/dev/null || true")
+            user_data_lines.append("  - systemctl enable --now qemu-guest-agent 2>/dev/null || true")
             for cmd in config.runcmd:
                 user_data_lines.append(f"  - {cmd}")
 
