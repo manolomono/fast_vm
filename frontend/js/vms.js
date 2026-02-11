@@ -142,6 +142,10 @@ window.FastVM.vmMethods = {
     selectVm(vm) {
         this.selectedVm = vm;
         this.currentView = 'dashboard';
+        this.$nextTick(() => {
+            const card = document.getElementById('vm-card-' + vm.id);
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
     },
 
     editVm(vm) {
