@@ -82,6 +82,11 @@ function SpiceMainConn()
 SpiceMainConn.prototype = Object.create(SpiceConn.prototype);
 SpiceMainConn.prototype.process_channel_message = function(msg)
 {
+    if (msg.type == 109 && msg.type != Constants.SPICE_MSG_MAIN_AGENT_DATA)
+    {
+        console.error("SPICE BUG: msg.type=109 but AGENT_DATA=" + Constants.SPICE_MSG_MAIN_AGENT_DATA + " typeof msg.type=" + typeof msg.type);
+    }
+
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_BEGIN)
     {
         this.known_unimplemented(msg.type, "Main Migrate Begin");
@@ -337,7 +342,8 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             return true;
         }
 
-        return false;
+        console.log("SPICE: Unhandled agent data type=" + agent_data.type);
+        return true;  // We handled the AGENT_DATA message even if inner type is unknown
     }
 
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_SWITCH_HOST)

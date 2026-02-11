@@ -45,7 +45,9 @@
         </script>
 
         <script type="module" crossorigin="anonymous">
-            import * as SpiceHtml5 from './src/main.js';
+            var _cb = '?v=' + Date.now();
+            var SpiceHtml5 = await import('./src/main.js' + _cb);
+            console.log("[SPICE-HTML5] Module loaded (v3), AGENT_DATA=" + SpiceHtml5.SpiceMainConn);
 
             var sc;
             var reconnectAttempts = 0;
