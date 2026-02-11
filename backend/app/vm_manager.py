@@ -229,6 +229,15 @@ class VMManager:
                     if vm.get('display_type') == 'std':
                         vm['display_type'] = 'qxl'  # Better for SPICE
                         needs_save = True
+                    # Migrate os_type - auto-detect Windows from ISO name or VM name
+                    if 'os_type' not in vm:
+                        name_lower = vm.get('name', '').lower()
+                        iso_lower = os.path.basename(vm.get('iso_path', '') or '').lower()
+                        if any(w in name_lower or w in iso_lower for w in ['win', 'windows', 'w10', 'w11']):
+                            vm['os_type'] = 'windows'
+                        else:
+                            vm['os_type'] = 'linux'
+                        needs_save = True
                 if needs_save:
                     with open(self.config_file, 'w') as f:
                         json.dump(vms, f, indent=2)
