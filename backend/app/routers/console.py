@@ -61,6 +61,20 @@ async def get_spice_tools_status(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/spice-tools/download")
+async def download_spice_tools(
+    current_user: AuthUserInfo = Depends(get_current_user),
+):
+    """Download spice-guest-tools ISO for Windows VMs"""
+    try:
+        return vm_manager.download_spice_guest_tools()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Download error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to download spice-guest-tools")
+
+
 # ==================== VNC Endpoints ====================
 
 
