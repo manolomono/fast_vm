@@ -20,6 +20,7 @@
 
 import * as Messages from './spicemsg.js';
 import { Constants } from './enums.js';
+import { code_to_scancode } from './code_to_scancode.js';
 import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
@@ -75,6 +76,7 @@ function SpiceMainConn()
     this.file_xfer_task_id = 0;
     this.file_xfer_read_queue = [];
     this.ports = [];
+    this.guest_caps = 0;
 }
 
 SpiceMainConn.prototype = Object.create(SpiceConn.prototype);
@@ -230,33 +232,52 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_MAIN_AGENT_DATA)
     {
         var agent_data = new Messages.SpiceMsgMainAgentData(msg.data);
+        console.log("SPICE agent message type=" + agent_data.type + " size=" + agent_data.size);
         if (agent_data.type == Constants.VD_AGENT_ANNOUNCE_CAPABILITIES)
         {
             var agent_caps = new Messages.VDAgentAnnounceCapabilities(agent_data.data);
+            this.guest_caps = agent_caps.caps;
+            var has_clip = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD));
+            var has_sel = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+            var has_demand = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_BY_DEMAND));
+            console.log("SPICE agent caps: 0x" + agent_caps.caps.toString(16) +
+                " clipboard=" + has_clip + " selection=" + has_sel + " by_demand=" + has_demand);
+            window._spiceAgentCaps = { clipboard: has_clip, selection: has_sel, by_demand: has_demand };
+            window.dispatchEvent(new CustomEvent('spice-agent-caps', { detail: window._spiceAgentCaps }));
             if (agent_caps.request)
                 this.announce_agent_capabilities(0);
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD_GRAB)
         {
+            console.log("SPICE: CLIPBOARD_GRAB received, data size=" + (agent_data.data ? agent_data.data.byteLength : 0));
             var grab = new Messages.VDAgentClipboardGrab(agent_data.data);
+            console.log("SPICE: CLIPBOARD_GRAB types=" + JSON.stringify(grab.types) + " selection=" + grab.selection);
             // Guest grabbed clipboard - request UTF-8 text if available
             if (grab.types && grab.types.indexOf(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT) !== -1)
             {
+                console.log("SPICE: Requesting UTF-8 text from guest");
                 var req = new Messages.VDAgentClipboardRequest(
                     Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
                     Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT);
                 this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, req);
             }
+            else
+            {
+                console.log("SPICE: CLIPBOARD_GRAB has no UTF-8 type");
+            }
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD)
         {
+            console.log("SPICE: CLIPBOARD data received, size=" + (agent_data.data ? agent_data.data.byteLength : 0));
             var clip = new Messages.VDAgentClipboard(agent_data.data);
+            console.log("SPICE: CLIPBOARD type=" + clip.type + " data_size=" + (clip.data ? clip.data.byteLength : 0));
             if (clip.type == Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT && clip.data)
             {
                 // Decode UTF-8 text from guest and write to browser clipboard
                 var text = new TextDecoder('utf-8').decode(clip.data);
+                console.log("SPICE: Clipboard text from guest (" + text.length + " chars)");
                 // Always store for fallback UI access
                 window._spiceClipboardText = text;
                 window.dispatchEvent(new CustomEvent('spice-clipboard-update', { detail: text }));
@@ -271,6 +292,10 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
                 } else {
                     window._spiceClipboardOk = false;
                 }
+            }
+            else
+            {
+                console.log("SPICE: CLIPBOARD ignored - type=" + clip.type + " (expected " + Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT + ")");
             }
             return true;
         }
@@ -459,6 +484,84 @@ SpiceMainConn.prototype.send_clipboard_text = function(text)
     this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clip_msg);
 }
 
+SpiceMainConn.prototype.typeText = function(text, callback)
+{
+    // Type text into the VM by simulating keyboard input (no vdagent needed)
+    if (!this.inputs || this.inputs.state !== "ready") {
+        console.log("SPICE inputs not ready for typing");
+        if (callback) callback(false);
+        return;
+    }
+
+    // Character to DOM code mapping (US keyboard layout)
+    var CHAR_MAP = {};
+    'abcdefghijklmnopqrstuvwxyz'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Key' + c.toUpperCase(), shift: false };
+    });
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Key' + c, shift: true };
+    });
+    '0123456789'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Digit' + c, shift: false };
+    });
+    var sd = {'!':'Digit1','@':'Digit2','#':'Digit3','$':'Digit4','%':'Digit5',
+              '^':'Digit6','&':'Digit7','*':'Digit8','(':'Digit9',')':'Digit0'};
+    Object.keys(sd).forEach(function(c) { CHAR_MAP[c] = { code: sd[c], shift: true }; });
+    var sym = {' ':'Space','\n':'Enter','\t':'Tab','-':'Minus','=':'Equal',
+               '[':'BracketLeft',']':'BracketRight','\\':'Backslash',
+               ';':'Semicolon',"'":'Quote','`':'Backquote',',':'Comma',
+               '.':'Period','/':'Slash'};
+    Object.keys(sym).forEach(function(c) { CHAR_MAP[c] = { code: sym[c], shift: false }; });
+    var ss = {'_':'Minus','+':'Equal','{':'BracketLeft','}':'BracketRight',
+              '|':'Backslash',':':'Semicolon','"':'Quote','~':'Backquote',
+              '<':'Comma','>':'Period','?':'Slash'};
+    Object.keys(ss).forEach(function(c) { CHAR_MAP[c] = { code: ss[c], shift: true }; });
+
+    var SHIFT_SCAN = code_to_scancode['ShiftLeft'];
+    var inputs = this.inputs;
+    var chars = text.split('');
+    var i = 0;
+
+    function pressKey(scancode) {
+        var kd = new Messages.SpiceMsgcKeyDown();
+        kd.code = scancode;
+        var msg = new Messages.SpiceMiniData();
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_DOWN, kd);
+        inputs.send_msg(msg);
+    }
+    function releaseKey(scancode) {
+        var ku = new Messages.SpiceMsgcKeyUp();
+        ku.code = scancode < 0x100 ? scancode | 0x80 : scancode | 0x8000;
+        var msg = new Messages.SpiceMiniData();
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, ku);
+        inputs.send_msg(msg);
+    }
+
+    function typeNext() {
+        if (i >= chars.length) {
+            if (callback) callback(true);
+            return;
+        }
+        var ch = chars[i++];
+        // Handle \r\n as single Enter
+        if (ch === '\r') { setTimeout(typeNext, 5); return; }
+
+        var km = CHAR_MAP[ch];
+        if (!km) { setTimeout(typeNext, 5); return; }
+
+        var scancode = code_to_scancode[km.code];
+        if (scancode === undefined) { setTimeout(typeNext, 5); return; }
+
+        if (km.shift) pressKey(SHIFT_SCAN);
+        pressKey(scancode);
+        releaseKey(scancode);
+        if (km.shift) releaseKey(SHIFT_SCAN);
+
+        setTimeout(typeNext, 15);
+    }
+    typeNext();
+}
+
 SpiceMainConn.prototype.resize_window = function(flags, width, height, depth, x, y)
 {
     var monitors_config = new Messages.VDAgentMonitorsConfig(flags, width, height, depth, x, y);
@@ -569,6 +672,7 @@ SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error)
 SpiceMainConn.prototype.connect_agent = function()
 {
     this.agent_connected = true;
+    console.log("SPICE: Agent connected, starting capability exchange");
 
     var agent_start = new Messages.SpiceMsgcMainAgentStart(~0);
     var mr = new Messages.SpiceMiniData();
