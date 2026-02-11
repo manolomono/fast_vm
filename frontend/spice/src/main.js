@@ -18,9 +18,9 @@
    along with spice-html5.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-import * as Messages from './spicemsg.js';
-import { Constants } from './enums.js';
-import { code_to_scancode } from './code_to_scancode.js';
+import * as Messages from './spicemsg.js?v=3';
+import { Constants } from './enums.js?v=3';
+import { code_to_scancode } from './code_to_scancode.js?v=3';
 import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
