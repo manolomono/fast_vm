@@ -59,6 +59,7 @@ window.FastVM.vmMethods = {
                 secondary_iso_path: this.editTarget.secondary_iso_path || null,
                 cpu_model: this.editTarget.cpu_model,
                 display_type: this.editTarget.display_type,
+                os_type: this.editTarget.os_type || 'linux',
                 networks: this.editTarget.networks,
                 boot_order: this.editTarget.boot_order
             };
@@ -164,7 +165,7 @@ window.FastVM.vmMethods = {
         this.createForm = {
             name: '', memory: 2048, cpus: 2, disk_size: 20,
             iso_path: '', secondary_iso_path: '',
-            cpu_model: 'host', display_type: 'qxl',
+            cpu_model: 'host', display_type: 'qxl', os_type: 'linux',
             networks: [{ type: 'nat', model: 'virtio', port_forwards: [] }],
             boot_order: ['disk', 'cdrom']
         };

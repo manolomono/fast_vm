@@ -79,7 +79,7 @@ function dashboard() {
         createForm: {
             name: '', memory: 2048, cpus: 2, disk_size: 20,
             iso_path: '', secondary_iso_path: '',
-            cpu_model: 'host', display_type: 'qxl',
+            cpu_model: 'host', display_type: 'qxl', os_type: 'linux',
             networks: [{ type: 'nat', model: 'virtio', port_forwards: [] }],
             boot_order: ['disk', 'cdrom']
         },

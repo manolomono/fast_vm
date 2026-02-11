@@ -146,6 +146,7 @@ class VMCreate(BaseModel):
     disk_size: int = Field(default=20, ge=5, le=500)
     iso_path: Optional[str] = None
     secondary_iso_path: Optional[str] = None  # Secondary CD-ROM (e.g., drivers ISO)
+    os_type: Literal["linux", "windows", "other"] = "linux"
 
     @field_validator('name')
     @classmethod
@@ -200,6 +201,7 @@ class VMInfo(BaseModel):
     boot_order: List[str] = ["disk", "cdrom"]
     cpu_model: str = "host"
     display_type: str = "qxl"  # Default to QXL for SPICE
+    os_type: str = "linux"
 
 
 class VMResponse(BaseModel):

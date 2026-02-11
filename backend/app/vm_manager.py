@@ -459,7 +459,8 @@ class VMManager:
             'volumes': [],
             'boot_order': vm_data.boot_order,
             'cpu_model': vm_data.cpu_model,
-            'display_type': vm_data.display_type
+            'display_type': vm_data.display_type,
+            'os_type': vm_data.os_type
         }
 
         self.vms[vm_id] = vm_config
@@ -595,34 +596,24 @@ class VMManager:
         has_iso = vm.get('iso_path') and os.path.exists(vm['iso_path'])
         has_secondary_iso = vm.get('secondary_iso_path') and os.path.exists(vm['secondary_iso_path'])
 
-        # Auto-detect Windows VMs and mount spice-guest-tools if available
-        iso_name = os.path.basename(vm.get('iso_path', '')).lower() if vm.get('iso_path') else ''
-        is_likely_windows = any(w in iso_name for w in ['win', 'windows', 'w10', 'w11'])
+        is_windows = vm.get('os_type') == 'windows'
         has_spice_tools = self.spice_tools_iso.exists()
 
-        if has_iso or has_secondary_iso:
-            # Use IDE controller for CD-ROMs for better compatibility
-            cd_index = 0
-            if has_iso:
-                qemu_cmd.extend([
-                    "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
-                ])
-                cd_index += 1
-            if has_secondary_iso:
-                # Mount secondary ISO (e.g., virtio-win drivers) as second CD-ROM
-                qemu_cmd.extend([
-                    "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
-                ])
-                cd_index += 1
-            # Mount spice-guest-tools ISO for Windows VMs (as additional CD-ROM)
-            if is_likely_windows and has_spice_tools and not has_secondary_iso:
-                qemu_cmd.extend([
-                    "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index}"
-                ])
-        elif is_likely_windows and has_spice_tools:
-            # VM has no ISOs but is Windows - still mount spice-guest-tools
+        cd_index = 0
+        if has_iso:
             qemu_cmd.extend([
-                "-drive", f"file={self.spice_tools_iso},media=cdrom,index=0"
+                "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
+            ])
+            cd_index += 1
+        if has_secondary_iso:
+            qemu_cmd.extend([
+                "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
+            ])
+            cd_index += 1
+        # Auto-mount spice-guest-tools for Windows VMs on every boot
+        if is_windows and has_spice_tools:
+            qemu_cmd.extend([
+                "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index},readonly=on"
             ])
 
         # Add boot order
@@ -989,6 +980,8 @@ class VMManager:
             vm['cpu_model'] = updates['cpu_model']
         if 'display_type' in updates and updates['display_type'] is not None:
             vm['display_type'] = updates['display_type']
+        if 'os_type' in updates and updates['os_type'] is not None:
+            vm['os_type'] = updates['os_type']
 
         self._save_vms()
         return VMInfo(**vm)
@@ -1180,7 +1173,8 @@ class VMManager:
             'volumes': [],
             'boot_order': source_vm.get('boot_order', ['disk', 'cdrom']),
             'cpu_model': source_vm.get('cpu_model', 'host'),
-            'display_type': source_vm.get('display_type', 'qxl')
+            'display_type': source_vm.get('display_type', 'qxl'),
+            'os_type': source_vm.get('os_type', 'linux')
         }
 
         self.vms[new_vm_id] = new_vm_config
