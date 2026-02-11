@@ -213,7 +213,7 @@
 
                     <!-- VM Cards Grid -->
                     <div x-show="currentView === 'dashboard'" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                        <template x-for="vm in vms" :key="vm.id">
+                        <template x-for="vm in filteredVMs" :key="vm.id">
                             <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden hover:border-slate-600 transition-colors">
                                 <div class="p-4">
                                     <div class="flex items-start justify-between mb-3">
@@ -293,6 +293,7 @@
                                 </div>
                             </div>
                         </template>
+                        <p x-show="filteredVMs.length === 0 && vms.length > 0" class="text-slate-500 col-span-full text-center py-12">No hay VMs que coincidan con el filtro.</p>
                         <p x-show="vms.length === 0" class="text-slate-500 col-span-full text-center py-12">No hay máquinas virtuales. Crea una nueva para comenzar.</p>
                     </div>
 
