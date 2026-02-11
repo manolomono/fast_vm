@@ -257,11 +257,19 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             {
                 // Decode UTF-8 text from guest and write to browser clipboard
                 var text = new TextDecoder('utf-8').decode(clip.data);
+                // Always store for fallback UI access
+                window._spiceClipboardText = text;
+                window.dispatchEvent(new CustomEvent('spice-clipboard-update', { detail: text }));
                 if (navigator.clipboard && navigator.clipboard.writeText)
                 {
-                    navigator.clipboard.writeText(text).catch(function(e) {
-                        console.log("Clipboard write failed:", e);
+                    navigator.clipboard.writeText(text).then(function() {
+                        window._spiceClipboardOk = true;
+                    }).catch(function(e) {
+                        console.log("Clipboard write failed (use clipboard button):", e);
+                        window._spiceClipboardOk = false;
                     });
+                } else {
+                    window._spiceClipboardOk = false;
                 }
             }
             return true;
@@ -434,6 +442,21 @@ SpiceMainConn.prototype.clipboard_grab_text = function()
         Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
         [Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT]);
     this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_GRAB, grab);
+}
+
+SpiceMainConn.prototype.send_clipboard_text = function(text)
+{
+    // Send text to the guest clipboard via vdagent
+    // First announce we grabbed the clipboard
+    this.clipboard_grab_text();
+    // Then send the actual data
+    var encoder = new TextEncoder();
+    var encoded = encoder.encode(text);
+    var clip_msg = new Messages.VDAgentClipboard(
+        Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
+        Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT,
+        encoded.buffer);
+    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clip_msg);
 }
 
 SpiceMainConn.prototype.resize_window = function(flags, width, height, depth, x, y)
