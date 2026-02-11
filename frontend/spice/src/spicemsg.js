@@ -1315,6 +1315,147 @@ SpiceMsgPortInit.prototype =
     }
 }
 
+/* Clipboard messages for VD Agent */
+function VDAgentClipboardGrab(selection, types)
+{
+    if (types !== undefined)
+    {
+        this.selection = selection;
+        this.types = types;
+    }
+    else
+        this.from_buffer(selection);
+}
+VDAgentClipboardGrab.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint8(at, this.selection); at += 4;
+        for (var i = 0; i < this.types.length; i++)
+        {
+            dv.setUint32(at, this.types[i], true); at += 4;
+        }
+    },
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.selection = dv.getUint8(at); at += 4;
+        this.types = [];
+        while (at < a.byteLength)
+        {
+            this.types.push(dv.getUint32(at, true)); at += 4;
+        }
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 4 + (this.types.length * 4);
+    }
+};
+
+function VDAgentClipboardRequest(selection, type)
+{
+    if (type !== undefined)
+    {
+        this.selection = selection;
+        this.type = type;
+    }
+    else
+        this.from_buffer(selection);
+}
+VDAgentClipboardRequest.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint8(at, this.selection); at += 4;
+        dv.setUint32(at, this.type, true); at += 4;
+    },
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.selection = dv.getUint8(at); at += 4;
+        this.type = dv.getUint32(at, true); at += 4;
+        return at;
+    },
+    buffer_size: function()
+    {
+        return 8;
+    }
+};
+
+function VDAgentClipboard(selection, type, data)
+{
+    if (type !== undefined)
+    {
+        this.selection = selection;
+        this.type = type;
+        this.data = data;
+    }
+    else
+        this.from_buffer(selection);
+}
+VDAgentClipboard.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint8(at, this.selection); at += 4;
+        dv.setUint32(at, this.type, true); at += 4;
+        var u8 = new Uint8Array(a, at);
+        u8.set(new Uint8Array(this.data));
+    },
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.selection = dv.getUint8(at); at += 4;
+        this.type = dv.getUint32(at, true); at += 4;
+        this.data = a.slice(at);
+        return a.byteLength;
+    },
+    buffer_size: function()
+    {
+        return 8 + (this.data ? this.data.byteLength : 0);
+    }
+};
+
+function VDAgentClipboardRelease(selection)
+{
+    if (typeof selection === 'number')
+        this.selection = selection;
+    else if (selection)
+        this.from_buffer(selection);
+    else
+        this.selection = 0;
+}
+VDAgentClipboardRelease.prototype =
+{
+    to_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        dv.setUint8(at, this.selection);
+    },
+    from_buffer: function(a, at)
+    {
+        at = at || 0;
+        var dv = new SpiceDataView(a);
+        this.selection = dv.getUint8(at);
+        return at + 4;
+    },
+    buffer_size: function()
+    {
+        return 4;
+    }
+};
+
 export {
   SpiceLinkHeader,
   SpiceLinkMess,
@@ -1368,4 +1509,8 @@ export {
   SpiceMsgcDisplayStreamReport,
   SpiceMsgDisplayInvalList,
   SpiceMsgPortInit,
+  VDAgentClipboardGrab,
+  VDAgentClipboardRequest,
+  VDAgentClipboard,
+  VDAgentClipboardRelease,
 };

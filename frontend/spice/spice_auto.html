@@ -227,6 +227,18 @@
             connect(undefined);
             document.getElementById('sendCtrlAltDel').addEventListener('click', function(){ SpiceHtml5.sendCtrlAltDel(sc); });
 
+            // Host-to-guest clipboard: notify guest when user copies/cuts on host
+            document.addEventListener('paste', function(e) {
+                if (window.spice_connection && navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(function(text) {
+                        if (text) {
+                            // Announce clipboard grab with UTF-8 type
+                            window.spice_connection.clipboard_grab_text();
+                        }
+                    }).catch(function() {});
+                }
+            });
+
             // Listen for resize messages from parent window (fullscreen)
             window.addEventListener('message', function(event) {
                 if (event.data && event.data.action === 'resize') {
@@ -243,11 +255,15 @@
                 console.log('triggerResize called, connection:', !!window.spice_connection);
                 if (window.spice_connection) {
                     var sc = window.spice_connection;
+                    var loginBar = document.getElementById('login');
+                    var barH = loginBar ? loginBar.offsetHeight : 0;
                     var w = window.innerWidth;
-                    var h = window.innerHeight;
-                    // Round to multiple of 8 (required by display)
+                    var h = window.innerHeight - barH;
+                    // Round down to multiple of 8 (required by Xorg/display)
                     w = w - (w % 8);
                     h = h - (h % 8);
+                    if (w < 640) w = 640;
+                    if (h < 480) h = 480;
                     console.log('Requesting resize to:', w, 'x', h);
                     try {
                         sc.resize_window(0, w, h, 32, 0, 0);
@@ -261,9 +277,9 @@
 
     </head>
 
-    <body>
+    <body style="display:flex;flex-direction:column;height:100vh;overflow:hidden;">
 
-        <div id="login">
+        <div id="login" style="flex-shrink:0;">
             <button onclick="open_nav()">&#9776; SPICE</button>
             <button onclick="window.triggerResize()" style="margin-left:10px;">⛶ Resize</button>
             <button onclick="toggleFullscreenInner()" style="margin-left:10px;">🖥 Fullscreen</button>

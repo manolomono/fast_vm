@@ -545,7 +545,7 @@ class VMManager:
             "-device", "ahci,id=ahci",
             "-device", "ide-hd,drive=disk0,bus=ahci.0",
             # SPICE configuration - bind to localhost only (proxied via FastAPI WebSocket)
-            "-spice", f"port={spice_port},addr=127.0.0.1,disable-ticketing=on",
+            "-spice", f"port={spice_port},addr=127.0.0.1,disable-ticketing=on,streaming-video=off,agent-mouse=on",
             # QXL display for best SPICE experience
             "-device", "qxl-vga,vgamem_mb=64",
             # SPICE agent channel for clipboard, mouse, and display resize
