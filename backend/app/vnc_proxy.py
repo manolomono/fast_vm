@@ -42,7 +42,7 @@ class VNCProxyManager:
         raise RuntimeError("No free WebSocket ports available")
 
     def _is_port_in_use(self, port: int) -> bool:
-        """Check if a port is in use
+        """Check if a port is in use via socket connect (avoids psutil AccessDenied)
 
         Args:
             port: Port number to check
@@ -50,10 +50,19 @@ class VNCProxyManager:
         Returns:
             True if port is in use
         """
-        for conn in psutil.net_connections():
-            if conn.laddr.port == port:
-                return True
-        return False
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                return s.connect_ex(('127.0.0.1', port)) == 0
+        except Exception:
+            try:
+                for conn in psutil.net_connections():
+                    if conn.laddr.port == port:
+                        return True
+            except (psutil.AccessDenied, OSError):
+                pass
+            return False
 
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running

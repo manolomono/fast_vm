@@ -289,14 +289,25 @@ class VMManager:
         return ':'.join(map(lambda x: "%02x" % x, mac))
 
     def _is_port_in_use(self, port: int) -> bool:
-        """Check if a port is currently in use on the system"""
+        """Check if a port is currently in use on the system.
+        Uses socket connect instead of psutil.net_connections() which
+        requires elevated permissions and silently fails with AccessDenied.
+        """
+        import socket
         try:
-            for conn in psutil.net_connections():
-                if conn.laddr.port == port:
-                    return True
-        except (psutil.AccessDenied, OSError):
-            pass
-        return False
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex(('127.0.0.1', port))
+                return result == 0
+        except Exception:
+            # Fallback to psutil if socket check fails
+            try:
+                for conn in psutil.net_connections():
+                    if conn.laddr.port == port:
+                        return True
+            except (psutil.AccessDenied, OSError):
+                pass
+            return False
 
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running"""
@@ -1056,14 +1067,15 @@ class VMManager:
         if not spice_port:
             raise ValueError("VM does not have SPICE port configured")
 
-        # Verify the SPICE port is actually listening
-        if not self._is_port_in_use(spice_port):
-            raise ValueError(f"SPICE port {spice_port} is not responding. The VM display may not be ready yet.")
+        # Check if SPICE port is listening, but don't block if check is inconclusive.
+        # The WebSocket proxy (/ws/spice/{vm_id}) has its own retry logic (3 attempts)
+        # so it's better to let the client connect and retry than to reject here.
+        port_ready = self._is_port_in_use(spice_port)
 
         return {
             'spice_port': spice_port,
             'ws_url': f"/ws/spice/{vm_id}",
-            'status': 'ready'
+            'status': 'ready' if port_ready else 'starting'
         }
 
     def get_spice_tools_status(self) -> Dict:
