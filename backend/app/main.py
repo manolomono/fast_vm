@@ -154,6 +154,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # Prevent caching of SPICE/VNC console files to ensure fresh JS loads
+        path = request.url.path
+        if path.startswith("/spice/") or path.startswith("/vnc/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         if os.environ.get("FASTVM_PRODUCTION"):
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
             response.headers["Content-Security-Policy"] = (

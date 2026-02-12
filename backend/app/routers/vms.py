@@ -61,10 +61,14 @@ async def start_vm(
         log_action(current_user.username, "start_vm", "vm", vm_id, {"name": vm.name}, request.client.host if request.client else None)
         return VMResponse(success=True, message=f"VM '{vm.name}' started successfully", vm=vm)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        error_msg = str(e)
+        # Network/config validation errors are 400, not-found errors are 404
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
-        logger.error(f"Internal error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to start VM {vm_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/vms/{vm_id}/stop", response_model=VMResponse)

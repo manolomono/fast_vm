@@ -229,6 +229,15 @@ class VMManager:
                     if vm.get('display_type') == 'std':
                         vm['display_type'] = 'qxl'  # Better for SPICE
                         needs_save = True
+                    # Migrate os_type - auto-detect Windows from ISO name or VM name
+                    if 'os_type' not in vm:
+                        name_lower = vm.get('name', '').lower()
+                        iso_lower = os.path.basename(vm.get('iso_path', '') or '').lower()
+                        if any(w in name_lower or w in iso_lower for w in ['win', 'windows', 'w10', 'w11']):
+                            vm['os_type'] = 'windows'
+                        else:
+                            vm['os_type'] = 'linux'
+                        needs_save = True
                 if needs_save:
                     with open(self.config_file, 'w') as f:
                         json.dump(vms, f, indent=2)
@@ -280,14 +289,25 @@ class VMManager:
         return ':'.join(map(lambda x: "%02x" % x, mac))
 
     def _is_port_in_use(self, port: int) -> bool:
-        """Check if a port is currently in use on the system"""
+        """Check if a port is currently in use on the system.
+        Uses socket connect instead of psutil.net_connections() which
+        requires elevated permissions and silently fails with AccessDenied.
+        """
+        import socket
         try:
-            for conn in psutil.net_connections():
-                if conn.laddr.port == port:
-                    return True
-        except (psutil.AccessDenied, OSError):
-            pass
-        return False
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex(('127.0.0.1', port))
+                return result == 0
+        except Exception:
+            # Fallback to psutil if socket check fails
+            try:
+                for conn in psutil.net_connections():
+                    if conn.laddr.port == port:
+                        return True
+            except (psutil.AccessDenied, OSError):
+                pass
+            return False
 
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is running"""
@@ -348,24 +368,23 @@ class VMManager:
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
             elif net_type == 'bridge':
-                # Bridge networking - requires qemu-bridge-helper to be configured
+                # Bridge networking - uses qemu-bridge-helper
                 bridge_name = net.get('bridge_name', 'br0')
-                # Verify bridge helper configuration
+                # Log warnings but don't block - let QEMU attempt the connection
                 bridge_conf = Path("/etc/qemu/bridge.conf")
                 helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
                 if not bridge_conf.exists():
-                    raise ValueError(
-                        f"Bridge networking requires /etc/qemu/bridge.conf. "
-                        f"Create it with: sudo mkdir -p /etc/qemu && "
+                    logger.warning(
+                        f"Bridge conf missing: /etc/qemu/bridge.conf. "
+                        f"Fix with: sudo mkdir -p /etc/qemu && "
                         f"sudo sh -c 'echo \"allow {bridge_name}\" > /etc/qemu/bridge.conf'"
                     )
                 if helper_path.exists():
-                    # Check if helper has setuid bit
                     mode = helper_path.stat().st_mode
-                    if not (mode & 0o4000):  # Check setuid bit
-                        raise ValueError(
-                            f"qemu-bridge-helper needs setuid permission. "
-                            f"Run: sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
+                    if not (mode & 0o4000):
+                        logger.warning(
+                            f"qemu-bridge-helper may need setuid: "
+                            f"sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
                         )
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
@@ -459,7 +478,8 @@ class VMManager:
             'volumes': [],
             'boot_order': vm_data.boot_order,
             'cpu_model': vm_data.cpu_model,
-            'display_type': vm_data.display_type
+            'display_type': vm_data.display_type,
+            'os_type': vm_data.os_type
         }
 
         self.vms[vm_id] = vm_config
@@ -595,34 +615,24 @@ class VMManager:
         has_iso = vm.get('iso_path') and os.path.exists(vm['iso_path'])
         has_secondary_iso = vm.get('secondary_iso_path') and os.path.exists(vm['secondary_iso_path'])
 
-        # Auto-detect Windows VMs and mount spice-guest-tools if available
-        iso_name = os.path.basename(vm.get('iso_path', '')).lower() if vm.get('iso_path') else ''
-        is_likely_windows = any(w in iso_name for w in ['win', 'windows', 'w10', 'w11'])
+        is_windows = vm.get('os_type') == 'windows'
         has_spice_tools = self.spice_tools_iso.exists()
 
-        if has_iso or has_secondary_iso:
-            # Use IDE controller for CD-ROMs for better compatibility
-            cd_index = 0
-            if has_iso:
-                qemu_cmd.extend([
-                    "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
-                ])
-                cd_index += 1
-            if has_secondary_iso:
-                # Mount secondary ISO (e.g., virtio-win drivers) as second CD-ROM
-                qemu_cmd.extend([
-                    "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
-                ])
-                cd_index += 1
-            # Mount spice-guest-tools ISO for Windows VMs (as additional CD-ROM)
-            if is_likely_windows and has_spice_tools and not has_secondary_iso:
-                qemu_cmd.extend([
-                    "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index}"
-                ])
-        elif is_likely_windows and has_spice_tools:
-            # VM has no ISOs but is Windows - still mount spice-guest-tools
+        cd_index = 0
+        if has_iso:
             qemu_cmd.extend([
-                "-drive", f"file={self.spice_tools_iso},media=cdrom,index=0"
+                "-drive", f"file={vm['iso_path']},media=cdrom,index={cd_index}"
+            ])
+            cd_index += 1
+        if has_secondary_iso:
+            qemu_cmd.extend([
+                "-drive", f"file={vm['secondary_iso_path']},media=cdrom,index={cd_index}"
+            ])
+            cd_index += 1
+        # Auto-mount spice-guest-tools for Windows VMs on every boot
+        if is_windows and has_spice_tools:
+            qemu_cmd.extend([
+                "-drive", f"file={self.spice_tools_iso},media=cdrom,index={cd_index},readonly=on"
             ])
 
         # Add boot order
@@ -701,6 +711,12 @@ class VMManager:
             self._save_vms()
 
             return VMInfo(**vm)
+        except subprocess.CalledProcessError as e:
+            vm['status'] = VMStatus.ERROR.value
+            self._save_vms()
+            # Show actual QEMU error output to the user
+            error_detail = e.stderr.strip() if e.stderr else e.stdout.strip() if e.stdout else str(e)
+            raise Exception(f"QEMU failed to start: {error_detail}")
         except Exception as e:
             vm['status'] = VMStatus.ERROR.value
             self._save_vms()
@@ -989,6 +1005,8 @@ class VMManager:
             vm['cpu_model'] = updates['cpu_model']
         if 'display_type' in updates and updates['display_type'] is not None:
             vm['display_type'] = updates['display_type']
+        if 'os_type' in updates and updates['os_type'] is not None:
+            vm['os_type'] = updates['os_type']
 
         self._save_vms()
         return VMInfo(**vm)
@@ -1054,14 +1072,15 @@ class VMManager:
         if not spice_port:
             raise ValueError("VM does not have SPICE port configured")
 
-        # Verify the SPICE port is actually listening
-        if not self._is_port_in_use(spice_port):
-            raise ValueError(f"SPICE port {spice_port} is not responding. The VM display may not be ready yet.")
+        # Check if SPICE port is listening, but don't block if check is inconclusive.
+        # The WebSocket proxy (/ws/spice/{vm_id}) has its own retry logic (3 attempts)
+        # so it's better to let the client connect and retry than to reject here.
+        port_ready = self._is_port_in_use(spice_port)
 
         return {
             'spice_port': spice_port,
             'ws_url': f"/ws/spice/{vm_id}",
-            'status': 'ready'
+            'status': 'ready' if port_ready else 'starting'
         }
 
     def get_spice_tools_status(self) -> Dict:
@@ -1180,7 +1199,8 @@ class VMManager:
             'volumes': [],
             'boot_order': source_vm.get('boot_order', ['disk', 'cdrom']),
             'cpu_model': source_vm.get('cpu_model', 'host'),
-            'display_type': source_vm.get('display_type', 'qxl')
+            'display_type': source_vm.get('display_type', 'qxl'),
+            'os_type': source_vm.get('os_type', 'linux')
         }
 
         self.vms[new_vm_id] = new_vm_config

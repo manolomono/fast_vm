@@ -18,8 +18,9 @@
    along with spice-html5.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-import * as Messages from './spicemsg.js';
-import { Constants } from './enums.js';
+import * as Messages from './spicemsg.js?v=3';
+import { Constants } from './enums.js?v=3';
+import { code_to_scancode } from './code_to_scancode.js?v=3';
 import { SpiceCursorConn } from './cursor.js';
 import { SpiceConn } from './spiceconn.js';
 import { DEBUG } from './utils.js';
@@ -75,11 +76,17 @@ function SpiceMainConn()
     this.file_xfer_task_id = 0;
     this.file_xfer_read_queue = [];
     this.ports = [];
+    this.guest_caps = 0;
 }
 
 SpiceMainConn.prototype = Object.create(SpiceConn.prototype);
 SpiceMainConn.prototype.process_channel_message = function(msg)
 {
+    if (msg.type == 109 && msg.type != Constants.SPICE_MSG_MAIN_AGENT_DATA)
+    {
+        console.error("SPICE BUG: msg.type=109 but AGENT_DATA=" + Constants.SPICE_MSG_MAIN_AGENT_DATA + " typeof msg.type=" + typeof msg.type);
+    }
+
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_BEGIN)
     {
         this.known_unimplemented(msg.type, "Main Migrate Begin");
@@ -230,66 +237,130 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
     if (msg.type == Constants.SPICE_MSG_MAIN_AGENT_DATA)
     {
         var agent_data = new Messages.SpiceMsgMainAgentData(msg.data);
+        console.log("SPICE agent message type=" + agent_data.type + " size=" + agent_data.size);
         if (agent_data.type == Constants.VD_AGENT_ANNOUNCE_CAPABILITIES)
         {
             var agent_caps = new Messages.VDAgentAnnounceCapabilities(agent_data.data);
+            this.guest_caps = agent_caps.caps;
+            var has_clip = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD));
+            var has_sel = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+            var has_demand = !!(agent_caps.caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_BY_DEMAND));
+            console.log("SPICE agent caps: 0x" + agent_caps.caps.toString(16) +
+                " clipboard=" + has_clip + " selection=" + has_sel + " by_demand=" + has_demand);
+            // Clipboard is usable if either CLIPBOARD or CLIPBOARD_BY_DEMAND is set
+            window._spiceAgentCaps = { clipboard: has_clip || has_demand, selection: has_sel, by_demand: has_demand };
+            window.dispatchEvent(new CustomEvent('spice-agent-caps', { detail: window._spiceAgentCaps }));
             if (agent_caps.request)
                 this.announce_agent_capabilities(0);
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD_GRAB)
         {
-            var grab = new Messages.VDAgentClipboardGrab(agent_data.data);
+            console.log("SPICE: CLIPBOARD_GRAB received, data size=" + (agent_data.data ? agent_data.data.byteLength : 0));
+            var has_sel = !!(this.guest_caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+            var grab;
+            if (has_sel) {
+                grab = new Messages.VDAgentClipboardGrab(agent_data.data);
+            } else {
+                // Parse without selection prefix: data is just an array of uint32 types
+                grab = { selection: 0, types: [] };
+                var dv = new DataView(agent_data.data);
+                for (var off = 0; off < agent_data.data.byteLength; off += 4) {
+                    grab.types.push(dv.getUint32(off, true));
+                }
+            }
+            console.log("SPICE: CLIPBOARD_GRAB types=" + JSON.stringify(grab.types) + " selection=" + grab.selection + " has_sel=" + has_sel);
             // Guest grabbed clipboard - request UTF-8 text if available
             if (grab.types && grab.types.indexOf(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT) !== -1)
             {
-                var req = new Messages.VDAgentClipboardRequest(
-                    Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
-                    Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT);
-                this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, req);
+                console.log("SPICE: Requesting UTF-8 text from guest");
+                this._send_clipboard_request(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT);
+            }
+            else
+            {
+                console.log("SPICE: CLIPBOARD_GRAB has no UTF-8 type, types=" + JSON.stringify(grab.types));
             }
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD)
         {
-            var clip = new Messages.VDAgentClipboard(agent_data.data);
+            console.log("SPICE: CLIPBOARD data received, size=" + (agent_data.data ? agent_data.data.byteLength : 0));
+            var has_sel = !!(this.guest_caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+            var clip;
+            if (has_sel) {
+                clip = new Messages.VDAgentClipboard(agent_data.data);
+            } else {
+                // Parse without selection prefix: uint32 type + raw data
+                var dv = new DataView(agent_data.data);
+                clip = {
+                    selection: 0,
+                    type: dv.getUint32(0, true),
+                    data: agent_data.data.slice(4)
+                };
+            }
+            console.log("SPICE: CLIPBOARD type=" + clip.type + " data_size=" + (clip.data ? clip.data.byteLength : 0) + " has_sel=" + has_sel);
             if (clip.type == Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT && clip.data)
             {
                 // Decode UTF-8 text from guest and write to browser clipboard
                 var text = new TextDecoder('utf-8').decode(clip.data);
+                console.log("SPICE: Clipboard text from guest (" + text.length + " chars)");
+                // Always store for fallback UI access
+                window._spiceClipboardText = text;
+                window.dispatchEvent(new CustomEvent('spice-clipboard-update', { detail: text }));
                 if (navigator.clipboard && navigator.clipboard.writeText)
                 {
-                    navigator.clipboard.writeText(text).catch(function(e) {
-                        console.log("Clipboard write failed:", e);
+                    navigator.clipboard.writeText(text).then(function() {
+                        window._spiceClipboardOk = true;
+                    }).catch(function(e) {
+                        console.log("Clipboard write failed (use clipboard button):", e);
+                        window._spiceClipboardOk = false;
                     });
+                } else {
+                    window._spiceClipboardOk = false;
                 }
+            }
+            else
+            {
+                console.log("SPICE: CLIPBOARD ignored - type=" + clip.type + " (expected " + Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT + ")");
             }
             return true;
         }
         else if (agent_data.type == Constants.VD_AGENT_CLIPBOARD_REQUEST)
         {
-            var creq = new Messages.VDAgentClipboardRequest(agent_data.data);
+            var has_sel = !!(this.guest_caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+            var creq;
+            if (has_sel) {
+                creq = new Messages.VDAgentClipboardRequest(agent_data.data);
+            } else {
+                var dv = new DataView(agent_data.data);
+                creq = { selection: 0, type: dv.getUint32(0, true) };
+            }
             if (creq.type == Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT)
             {
-                // Guest requests clipboard data - read from browser clipboard
                 var _this = this;
-                if (navigator.clipboard && navigator.clipboard.readText)
+                // First try locally stored text (works on HTTP and HTTPS)
+                if (window._pendingClipboardText) {
+                    console.log("SPICE: Responding to CLIPBOARD_REQUEST with stored text (" + window._pendingClipboardText.length + " chars)");
+                    _this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, window._pendingClipboardText);
+                }
+                // Fallback: try browser clipboard API (HTTPS/localhost only)
+                else if (navigator.clipboard && navigator.clipboard.readText)
                 {
                     navigator.clipboard.readText().then(function(text) {
-                        var encoder = new TextEncoder();
-                        var encoded = encoder.encode(text);
-                        var clip_msg = new Messages.VDAgentClipboard(
-                            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
-                            Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT,
-                            encoded.buffer);
-                        _this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clip_msg);
+                        if (text) {
+                            console.log("SPICE: Responding to CLIPBOARD_REQUEST with browser clipboard (" + text.length + " chars)");
+                            _this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, text);
+                        } else {
+                            _this._send_clipboard_release();
+                        }
                     }).catch(function(e) {
-                        console.log("Clipboard read failed:", e);
-                        // Send empty release
-                        var rel = new Messages.VDAgentClipboardRelease(
-                            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD);
-                        _this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_RELEASE, rel);
+                        console.log("SPICE: Clipboard read failed:", e);
+                        _this._send_clipboard_release();
                     });
+                }
+                else {
+                    console.log("SPICE: No clipboard data available for CLIPBOARD_REQUEST");
+                    _this._send_clipboard_release();
                 }
             }
             return true;
@@ -304,7 +375,8 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             return true;
         }
 
-        return false;
+        console.log("SPICE: Unhandled agent data type=" + agent_data.type);
+        return true;  // We handled the AGENT_DATA message even if inner type is unknown
     }
 
     if (msg.type == Constants.SPICE_MSG_MAIN_MIGRATE_SWITCH_HOST)
@@ -428,12 +500,196 @@ SpiceMainConn.prototype.announce_agent_capabilities = function(request)
     this.send_agent_message(Constants.VD_AGENT_ANNOUNCE_CAPABILITIES, caps);
 }
 
+// Helper: check if guest supports CLIPBOARD_SELECTION
+SpiceMainConn.prototype._guest_has_selection = function()
+{
+    return !!(this.guest_caps & (1 << Constants.VD_AGENT_CAP_CLIPBOARD_SELECTION));
+}
+
+// Send CLIPBOARD_GRAB with correct format for guest capabilities
 SpiceMainConn.prototype.clipboard_grab_text = function()
 {
-    var grab = new Messages.VDAgentClipboardGrab(
-        Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
-        [Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT]);
-    this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_GRAB, grab);
+    if (this._guest_has_selection()) {
+        var grab = new Messages.VDAgentClipboardGrab(
+            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD,
+            [Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT]);
+        this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_GRAB, grab);
+    } else {
+        // Without selection: just send the types array (uint32[])
+        var buf = new ArrayBuffer(4);
+        new DataView(buf).setUint32(0, Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, true);
+        var mr = this._build_raw_agent_msg(Constants.VD_AGENT_CLIPBOARD_GRAB, buf);
+        this.send_agent_message_queue(mr);
+    }
+}
+
+// Send CLIPBOARD_REQUEST with correct format
+SpiceMainConn.prototype._send_clipboard_request = function(type)
+{
+    if (this._guest_has_selection()) {
+        var req = new Messages.VDAgentClipboardRequest(
+            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, type);
+        this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_REQUEST, req);
+    } else {
+        // Without selection: just uint32 type
+        var buf = new ArrayBuffer(4);
+        new DataView(buf).setUint32(0, type, true);
+        var mr = this._build_raw_agent_msg(Constants.VD_AGENT_CLIPBOARD_REQUEST, buf);
+        this.send_agent_message_queue(mr);
+    }
+}
+
+// Send CLIPBOARD data with correct format
+SpiceMainConn.prototype._send_clipboard_data = function(type, text)
+{
+    var encoder = new TextEncoder();
+    var encoded = encoder.encode(text);
+    if (this._guest_has_selection()) {
+        var clip_msg = new Messages.VDAgentClipboard(
+            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD, type, encoded.buffer);
+        this.send_agent_message(Constants.VD_AGENT_CLIPBOARD, clip_msg);
+    } else {
+        // Without selection: uint32 type + raw data
+        var buf = new ArrayBuffer(4 + encoded.byteLength);
+        var dv = new DataView(buf);
+        dv.setUint32(0, type, true);
+        new Uint8Array(buf, 4).set(encoded);
+        var mr = this._build_raw_agent_msg(Constants.VD_AGENT_CLIPBOARD, buf);
+        this.send_agent_message_queue(mr);
+    }
+}
+
+// Send CLIPBOARD_RELEASE with correct format
+SpiceMainConn.prototype._send_clipboard_release = function()
+{
+    if (this._guest_has_selection()) {
+        var rel = new Messages.VDAgentClipboardRelease(
+            Constants.VD_AGENT_CLIPBOARD_SELECTION_CLIPBOARD);
+        this.send_agent_message(Constants.VD_AGENT_CLIPBOARD_RELEASE, rel);
+    } else {
+        // Without selection: empty message
+        var mr = this._build_raw_agent_msg(Constants.VD_AGENT_CLIPBOARD_RELEASE, new ArrayBuffer(0));
+        this.send_agent_message_queue(mr);
+    }
+}
+
+// Build a raw agent message (bypassing typed constructors)
+SpiceMainConn.prototype._build_raw_agent_msg = function(type, payload)
+{
+    // VDAgentMessage header: protocol(4) + type(4) + opaque(8) + size(4) = 20 bytes
+    var hdr_size = 20;
+    var total = hdr_size + payload.byteLength;
+    var buf = new ArrayBuffer(total);
+    var dv = new DataView(buf);
+    dv.setUint32(0, Constants.VD_AGENT_PROTOCOL, true);
+    dv.setUint32(4, type, true);
+    // opaque = 0 (8 bytes)
+    dv.setUint32(8, 0, true);
+    dv.setUint32(12, 0, true);
+    dv.setUint32(16, payload.byteLength, true);
+    if (payload.byteLength > 0) {
+        new Uint8Array(buf, hdr_size).set(new Uint8Array(payload));
+    }
+
+    var maxsize = Constants.VD_AGENT_MAX_DATA_SIZE - Messages.SpiceMiniData.prototype.buffer_size();
+    var sb = 0;
+    var first_mr = null;
+    while (sb < total) {
+        var eb = Math.min(sb + maxsize, total);
+        var mr = new Messages.SpiceMiniData();
+        mr.type = Constants.SPICE_MSGC_MAIN_AGENT_DATA;
+        mr.size = eb - sb;
+        mr.data = buf.slice(sb, eb);
+        if (!first_mr) first_mr = mr;
+        else this.send_agent_message_queue(mr);
+        sb = eb;
+    }
+    return first_mr;
+}
+
+SpiceMainConn.prototype.send_clipboard_text = function(text)
+{
+    // Send text to the guest clipboard via vdagent
+    this.clipboard_grab_text();
+    this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, text);
+}
+
+SpiceMainConn.prototype.typeText = function(text, callback)
+{
+    // Type text into the VM by simulating keyboard input (no vdagent needed)
+    if (!this.inputs || this.inputs.state !== "ready") {
+        console.log("SPICE inputs not ready for typing");
+        if (callback) callback(false);
+        return;
+    }
+
+    // Character to DOM code mapping (US keyboard layout)
+    var CHAR_MAP = {};
+    'abcdefghijklmnopqrstuvwxyz'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Key' + c.toUpperCase(), shift: false };
+    });
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Key' + c, shift: true };
+    });
+    '0123456789'.split('').forEach(function(c) {
+        CHAR_MAP[c] = { code: 'Digit' + c, shift: false };
+    });
+    var sd = {'!':'Digit1','@':'Digit2','#':'Digit3','$':'Digit4','%':'Digit5',
+              '^':'Digit6','&':'Digit7','*':'Digit8','(':'Digit9',')':'Digit0'};
+    Object.keys(sd).forEach(function(c) { CHAR_MAP[c] = { code: sd[c], shift: true }; });
+    var sym = {' ':'Space','\n':'Enter','\t':'Tab','-':'Minus','=':'Equal',
+               '[':'BracketLeft',']':'BracketRight','\\':'Backslash',
+               ';':'Semicolon',"'":'Quote','`':'Backquote',',':'Comma',
+               '.':'Period','/':'Slash'};
+    Object.keys(sym).forEach(function(c) { CHAR_MAP[c] = { code: sym[c], shift: false }; });
+    var ss = {'_':'Minus','+':'Equal','{':'BracketLeft','}':'BracketRight',
+              '|':'Backslash',':':'Semicolon','"':'Quote','~':'Backquote',
+              '<':'Comma','>':'Period','?':'Slash'};
+    Object.keys(ss).forEach(function(c) { CHAR_MAP[c] = { code: ss[c], shift: true }; });
+
+    var SHIFT_SCAN = code_to_scancode['ShiftLeft'];
+    var inputs = this.inputs;
+    var chars = text.split('');
+    var i = 0;
+
+    function pressKey(scancode) {
+        var kd = new Messages.SpiceMsgcKeyDown();
+        kd.code = scancode;
+        var msg = new Messages.SpiceMiniData();
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_DOWN, kd);
+        inputs.send_msg(msg);
+    }
+    function releaseKey(scancode) {
+        var ku = new Messages.SpiceMsgcKeyUp();
+        ku.code = scancode < 0x100 ? scancode | 0x80 : scancode | 0x8000;
+        var msg = new Messages.SpiceMiniData();
+        msg.build_msg(Constants.SPICE_MSGC_INPUTS_KEY_UP, ku);
+        inputs.send_msg(msg);
+    }
+
+    function typeNext() {
+        if (i >= chars.length) {
+            if (callback) callback(true);
+            return;
+        }
+        var ch = chars[i++];
+        // Handle \r\n as single Enter
+        if (ch === '\r') { setTimeout(typeNext, 5); return; }
+
+        var km = CHAR_MAP[ch];
+        if (!km) { setTimeout(typeNext, 5); return; }
+
+        var scancode = code_to_scancode[km.code];
+        if (scancode === undefined) { setTimeout(typeNext, 5); return; }
+
+        if (km.shift) pressKey(SHIFT_SCAN);
+        pressKey(scancode);
+        releaseKey(scancode);
+        if (km.shift) releaseKey(SHIFT_SCAN);
+
+        setTimeout(typeNext, 15);
+    }
+    typeNext();
 }
 
 SpiceMainConn.prototype.resize_window = function(flags, width, height, depth, x, y)
@@ -546,6 +802,7 @@ SpiceMainConn.prototype.file_xfer_completed = function(file_xfer_task, error)
 SpiceMainConn.prototype.connect_agent = function()
 {
     this.agent_connected = true;
+    console.log("SPICE: Agent connected, starting capability exchange");
 
     var agent_start = new Messages.SpiceMsgcMainAgentStart(~0);
     var mr = new Messages.SpiceMiniData();
