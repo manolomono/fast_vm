@@ -279,6 +279,36 @@
                 setTimeout(triggerResize, 200);
             });
 
+            // Call backend QGA to resize guest display via xrandr
+            function qgaResize(w, h) {
+                var vmId = spice_query_var('vm_id', null);
+                var token = spice_query_var('token', null);
+                if (!vmId || !token) return;
+
+                var loc = window.parent ? window.parent.location : window.location;
+                var base = loc.protocol + '//' + loc.host;
+                var url = base + '/api/vms/' + vmId + '/display/resize';
+
+                fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token
+                    },
+                    body: JSON.stringify({ width: w, height: h })
+                }).then(function(resp) {
+                    if (resp.ok) {
+                        console.log('QGA resize OK:', w, 'x', h);
+                    } else {
+                        resp.text().then(function(t) {
+                            console.log('QGA resize failed (' + resp.status + '):', t);
+                        });
+                    }
+                }).catch(function(e) {
+                    console.log('QGA resize error:', e.message);
+                });
+            }
+
             window.triggerResize = function() {
                 console.log('triggerResize called, connection:', !!window.spice_connection);
                 if (window.spice_connection) {
@@ -295,10 +325,12 @@
                     console.log('Requesting resize to:', w, 'x', h);
                     try {
                         sc.resize_window(0, w, h, 32, 0, 0);
-                        console.log('Resize request sent');
+                        console.log('SPICE resize request sent');
                     } catch(e) {
-                        console.error('Resize error:', e);
+                        console.error('SPICE resize error:', e);
                     }
+                    // Also trigger resize via QGA (works for Linux guests)
+                    qgaResize(w, h);
                 }
             }
         </script>

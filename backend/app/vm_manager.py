@@ -581,6 +581,9 @@ class VMManager:
             "-device", "usb-redir,chardev=usbredirchardev1,id=usbredirdev1",
             "-chardev", "spicevmc,id=usbredirchardev2,name=usbredir",
             "-device", "usb-redir,chardev=usbredirchardev2,id=usbredirdev2",
+            # QEMU Guest Agent (QGA) channel for host-to-guest commands (resize, etc.)
+            "-chardev", f"socket,path={vm_dir / 'qga.sock'},server=on,wait=off,id=qga0",
+            "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Input devices
             "-device", "usb-tablet",
             "-monitor", f"unix:{monitor_file},server,nowait",
@@ -1250,41 +1253,6 @@ class VMManager:
             user_data_lines.append("  - apt-get install -y spice-vdagent qemu-guest-agent 2>/dev/null || yum install -y spice-vdagent qemu-guest-agent 2>/dev/null || true")
             user_data_lines.append("  - systemctl enable --now spice-vdagent 2>/dev/null || true")
             user_data_lines.append("  - systemctl enable --now qemu-guest-agent 2>/dev/null || true")
-            # Auto-resize helper for non-GNOME desktops (XFCE, etc.)
-            # QEMU SPICE server handles MONITORS_CONFIG internally (changes QXL preferred mode)
-            # but non-GNOME desktops don't auto-apply the new preferred resolution.
-            user_data_lines.append("  - |")
-            user_data_lines.append("    cat > /usr/local/bin/spice-auto-resize.sh << 'RESIZE_EOF'")
-            user_data_lines.append("    #!/bin/bash")
-            user_data_lines.append("    # Auto-apply SPICE preferred resolution for non-GNOME desktops")
-            user_data_lines.append("    while true; do")
-            user_data_lines.append("      for DISP in /tmp/.X11-unix/X*; do")
-            user_data_lines.append("        DNUM=$(basename $DISP | sed 's/X//')")
-            user_data_lines.append("        export DISPLAY=:${DNUM}")
-            user_data_lines.append("        PREFERRED=$(xrandr 2>/dev/null | grep -m1 '+' | awk '{print $1}')")
-            user_data_lines.append("        CURRENT=$(xrandr 2>/dev/null | grep -m1 '\\*' | awk '{print $1}')")
-            user_data_lines.append("        if [ -n \"$PREFERRED\" ] && [ \"$PREFERRED\" != \"$CURRENT\" ]; then")
-            user_data_lines.append("          OUTPUT=$(xrandr 2>/dev/null | grep ' connected' | head -1 | awk '{print $1}')")
-            user_data_lines.append("          xrandr --output \"$OUTPUT\" --mode \"$PREFERRED\" 2>/dev/null")
-            user_data_lines.append("        fi")
-            user_data_lines.append("      done")
-            user_data_lines.append("      sleep 2")
-            user_data_lines.append("    done")
-            user_data_lines.append("    RESIZE_EOF")
-            user_data_lines.append("    chmod +x /usr/local/bin/spice-auto-resize.sh")
-            # Install systemd user service for auto-resize
-            user_data_lines.append("  - |")
-            user_data_lines.append("    mkdir -p /etc/xdg/autostart")
-            user_data_lines.append("    cat > /etc/xdg/autostart/spice-auto-resize.desktop << 'DESKTOP_EOF'")
-            user_data_lines.append("    [Desktop Entry]")
-            user_data_lines.append("    Type=Application")
-            user_data_lines.append("    Name=SPICE Auto Resize")
-            user_data_lines.append("    Exec=/usr/local/bin/spice-auto-resize.sh")
-            user_data_lines.append("    Hidden=false")
-            user_data_lines.append("    NoDisplay=true")
-            user_data_lines.append("    X-GNOME-Autostart-enabled=false")
-            user_data_lines.append("    Comment=Auto-apply SPICE display resize for non-GNOME desktops")
-            user_data_lines.append("    DESKTOP_EOF")
             for cmd in config.runcmd:
                 user_data_lines.append(f"  - {cmd}")
 

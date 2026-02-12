@@ -1,11 +1,13 @@
 """VNC and SPICE console connection endpoints + WebSocket proxy."""
 from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 import asyncio
 import logging
 
 from ..models import VNCConnectionInfo, SpiceConnectionInfo, VMResponse
 from ..auth import get_current_user, UserInfo as AuthUserInfo
 from ..deps import vm_manager
+from ..qga import guest_resize_display, QGAError
 
 logger = logging.getLogger("fast_vm.routers.console")
 
@@ -73,6 +75,46 @@ async def download_spice_tools(
     except Exception as e:
         logger.error(f"Download error: {e}")
         raise HTTPException(status_code=500, detail="Failed to download spice-guest-tools")
+
+
+# ==================== Guest Agent Resize ====================
+
+
+class ResizeRequest(BaseModel):
+    width: int = Field(..., ge=640, le=7680)
+    height: int = Field(..., ge=480, le=4320)
+
+
+@router.post("/vms/{vm_id}/display/resize", response_model=VMResponse)
+async def resize_vm_display(
+    vm_id: str,
+    req: ResizeRequest,
+    current_user: AuthUserInfo = Depends(get_current_user),
+):
+    """Resize VM display via QEMU Guest Agent (runs xrandr in guest)."""
+    if vm_id not in vm_manager.vms:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    vm = vm_manager.vms[vm_id]
+    if vm.get('status') != 'running':
+        raise HTTPException(status_code=400, detail="VM is not running")
+
+    vm_dir = vm_manager.vms_dir / vm_id
+    try:
+        # Run in thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, guest_resize_display, vm_dir, req.width, req.height
+        )
+        return VMResponse(
+            success=True,
+            message=f"Display resize to {req.width}x{req.height} sent via guest agent"
+        )
+    except QGAError as e:
+        raise HTTPException(status_code=503, detail=f"Guest agent error: {e}")
+    except Exception as e:
+        logger.error(f"Resize error for VM {vm_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== VNC Endpoints ====================
