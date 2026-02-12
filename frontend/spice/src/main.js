@@ -337,16 +337,30 @@ SpiceMainConn.prototype.process_channel_message = function(msg)
             }
             if (creq.type == Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT)
             {
-                // Guest requests clipboard data - read from browser clipboard
                 var _this = this;
-                if (navigator.clipboard && navigator.clipboard.readText)
+                // First try locally stored text (works on HTTP and HTTPS)
+                if (window._pendingClipboardText) {
+                    console.log("SPICE: Responding to CLIPBOARD_REQUEST with stored text (" + window._pendingClipboardText.length + " chars)");
+                    _this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, window._pendingClipboardText);
+                }
+                // Fallback: try browser clipboard API (HTTPS/localhost only)
+                else if (navigator.clipboard && navigator.clipboard.readText)
                 {
                     navigator.clipboard.readText().then(function(text) {
-                        _this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, text);
+                        if (text) {
+                            console.log("SPICE: Responding to CLIPBOARD_REQUEST with browser clipboard (" + text.length + " chars)");
+                            _this._send_clipboard_data(Constants.VD_AGENT_CLIPBOARD_UTF8_TEXT, text);
+                        } else {
+                            _this._send_clipboard_release();
+                        }
                     }).catch(function(e) {
-                        console.log("Clipboard read failed:", e);
+                        console.log("SPICE: Clipboard read failed:", e);
                         _this._send_clipboard_release();
                     });
+                }
+                else {
+                    console.log("SPICE: No clipboard data available for CLIPBOARD_REQUEST");
+                    _this._send_clipboard_release();
                 }
             }
             return true;

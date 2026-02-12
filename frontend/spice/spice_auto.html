@@ -229,25 +229,41 @@
             connect(undefined);
             document.getElementById('sendCtrlAltDel').addEventListener('click', function(){ SpiceHtml5.sendCtrlAltDel(sc); });
 
-            // Host-to-guest clipboard: send clipboard text to VM on paste
+            // Host-to-guest clipboard sync
+            // Store text locally so CLIPBOARD_REQUEST handler can respond
+            window._pendingClipboardText = null;
+
+            // Sync clipboard when user clicks/focuses the SPICE console.
+            // Flow: user copies on host → clicks console → we read clipboard
+            // and send GRAB → user does Ctrl+V in VM → guest sends REQUEST
+            // → we respond with stored text.
+            function syncHostClipboard() {
+                if (!window.spice_connection) return;
+                if (navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(function(text) {
+                        if (text && text !== window._pendingClipboardText) {
+                            window._pendingClipboardText = text;
+                            console.log('SPICE: Host clipboard synced (' + text.length + ' chars), sending GRAB');
+                            window.spice_connection.clipboard_grab_text();
+                        }
+                    }).catch(function() {});
+                }
+            }
+
+            // Sync on click/focus of the SPICE display area
+            document.getElementById('spice-area').addEventListener('mousedown', syncHostClipboard);
+            window.addEventListener('focus', syncHostClipboard);
+
+            // Also handle paste events (works outside SPICE canvas)
             document.addEventListener('paste', function(e) {
                 if (!window.spice_connection) return;
-                // Get text directly from the paste event (works on HTTP and HTTPS)
                 var text = '';
                 if (e.clipboardData && e.clipboardData.getData) {
                     text = e.clipboardData.getData('text/plain');
                 }
-                if (text && window.spice_connection.send_clipboard_text) {
-                    window.spice_connection.send_clipboard_text(text);
-                    return;
-                }
-                // Fallback: try async clipboard API (HTTPS only)
-                if (text === '' && navigator.clipboard && navigator.clipboard.readText) {
-                    navigator.clipboard.readText().then(function(clipText) {
-                        if (clipText && window.spice_connection.send_clipboard_text) {
-                            window.spice_connection.send_clipboard_text(clipText);
-                        }
-                    }).catch(function() {});
+                if (text) {
+                    window._pendingClipboardText = text;
+                    window.spice_connection.clipboard_grab_text();
                 }
             });
 
@@ -445,11 +461,17 @@
             function sendClipToVm() {
                 var text = document.getElementById('clip-to-vm').value;
                 if (!text) return;
-                if (window.spice_connection && window.spice_connection.send_clipboard_text) {
-                    window.spice_connection.send_clipboard_text(text);
+                if (window.spice_connection) {
+                    // Store text and announce to guest via GRAB
+                    window._pendingClipboardText = text;
+                    window.spice_connection.clipboard_grab_text();
+                    // Also try direct send (some guests accept unsolicited data)
+                    if (window.spice_connection.send_clipboard_text) {
+                        window.spice_connection.send_clipboard_text(text);
+                    }
                     document.getElementById('clip-to-vm').value = '';
                 } else {
-                    alert('SPICE agent not connected or clipboard not supported. Use "Type it" instead.');
+                    alert('SPICE agent not connected. Use "Type it" instead.');
                 }
             }
 
