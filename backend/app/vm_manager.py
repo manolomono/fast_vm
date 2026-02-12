@@ -368,24 +368,23 @@ class VMManager:
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
             elif net_type == 'bridge':
-                # Bridge networking - requires qemu-bridge-helper to be configured
+                # Bridge networking - uses qemu-bridge-helper
                 bridge_name = net.get('bridge_name', 'br0')
-                # Verify bridge helper configuration
+                # Log warnings but don't block - let QEMU attempt the connection
                 bridge_conf = Path("/etc/qemu/bridge.conf")
                 helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
                 if not bridge_conf.exists():
-                    raise ValueError(
-                        f"Bridge networking requires /etc/qemu/bridge.conf. "
-                        f"Create it with: sudo mkdir -p /etc/qemu && "
+                    logger.warning(
+                        f"Bridge conf missing: /etc/qemu/bridge.conf. "
+                        f"Fix with: sudo mkdir -p /etc/qemu && "
                         f"sudo sh -c 'echo \"allow {bridge_name}\" > /etc/qemu/bridge.conf'"
                     )
                 if helper_path.exists():
-                    # Check if helper has setuid bit
                     mode = helper_path.stat().st_mode
-                    if not (mode & 0o4000):  # Check setuid bit
-                        raise ValueError(
-                            f"qemu-bridge-helper needs setuid permission. "
-                            f"Run: sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
+                    if not (mode & 0o4000):
+                        logger.warning(
+                            f"qemu-bridge-helper may need setuid: "
+                            f"sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
                         )
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
@@ -712,6 +711,12 @@ class VMManager:
             self._save_vms()
 
             return VMInfo(**vm)
+        except subprocess.CalledProcessError as e:
+            vm['status'] = VMStatus.ERROR.value
+            self._save_vms()
+            # Show actual QEMU error output to the user
+            error_detail = e.stderr.strip() if e.stderr else e.stdout.strip() if e.stdout else str(e)
+            raise Exception(f"QEMU failed to start: {error_detail}")
         except Exception as e:
             vm['status'] = VMStatus.ERROR.value
             self._save_vms()
