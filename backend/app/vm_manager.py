@@ -581,6 +581,9 @@ class VMManager:
             "-device", "usb-redir,chardev=usbredirchardev1,id=usbredirdev1",
             "-chardev", "spicevmc,id=usbredirchardev2,name=usbredir",
             "-device", "usb-redir,chardev=usbredirchardev2,id=usbredirdev2",
+            # QEMU Guest Agent (QGA) channel for host-to-guest commands (resize, etc.)
+            "-chardev", f"socket,path={vm_dir / 'qga.sock'},server=on,wait=off,id=qga0",
+            "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Input devices
             "-device", "usb-tablet",
             "-monitor", f"unix:{monitor_file},server,nowait",
