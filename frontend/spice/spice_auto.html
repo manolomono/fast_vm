@@ -343,7 +343,7 @@
             <button onclick="open_nav()">&#9776; SPICE</button>
             <button onclick="window.triggerResize()" style="margin-left:10px;">⛶ Resize</button>
             <button onclick="toggleFullscreenInner()" style="margin-left:10px;">🖥 Fullscreen</button>
-            <button id="clipboardBtn" onclick="toggleClipboardPanel()" style="margin-left:10px;">📋 Clipboard</button>
+
             <p id="hostname">Host Console</p>
         </div>
         <script>
@@ -407,124 +407,7 @@
             display_hostname()
         </script>
 
-        <!-- Clipboard panel for HTTP (non-secure context) fallback -->
-        <div id="clipboard-panel" style="display:none;position:fixed;top:40px;right:10px;z-index:9999;background:#1e1e2e;border:1px solid #45475a;border-radius:8px;padding:12px;width:320px;box-shadow:0 4px 12px rgba(0,0,0,0.5);font-family:sans-serif;color:#cdd6f4;">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <strong style="font-size:13px;">📋 VM Clipboard</strong>
-                <button onclick="toggleClipboardPanel()" style="background:none;border:none;color:#cdd6f4;cursor:pointer;font-size:16px;">✕</button>
-            </div>
-            <div id="clip-status" style="font-size:11px;padding:4px 8px;border-radius:4px;margin-bottom:8px;background:#313244;color:#a6adc8;">
-                Agent: checking...
-            </div>
-            <div style="margin-bottom:8px;">
-                <label style="font-size:11px;color:#a6adc8;">Copied from VM (select and Ctrl+C):</label>
-                <textarea id="clip-from-vm" readonly rows="3" style="width:100%;box-sizing:border-box;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;padding:6px;font-size:12px;resize:vertical;margin-top:4px;"></textarea>
-            </div>
-            <hr style="border-color:#45475a;margin:8px 0;">
-            <div>
-                <label style="font-size:11px;color:#a6adc8;">Send text to VM:</label>
-                <textarea id="clip-to-vm" rows="3" style="width:100%;box-sizing:border-box;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;padding:6px;font-size:12px;resize:vertical;margin-top:4px;" placeholder="Paste or write text here..."></textarea>
-                <div style="display:flex;gap:6px;margin-top:6px;">
-                    <button onclick="sendClipToVm()" style="background:#89b4fa;color:#1e1e2e;border:none;border-radius:4px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:bold;" title="Send via SPICE agent clipboard (requires guest tools)">Clipboard</button>
-                    <button onclick="typeToVm()" id="typeToVmBtn" style="background:#a6e3a1;color:#1e1e2e;border:none;border-radius:4px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:bold;" title="Type text character by character (always works)">Type it</button>
-                </div>
-                <div style="font-size:10px;color:#6c7086;margin-top:4px;">
-                    <b>Clipboard</b>: fast, needs SPICE guest tools &nbsp;|&nbsp; <b>Type it</b>: always works, simulates keyboard
-                </div>
-            </div>
-        </div>
 
-        <script>
-            var clipPanelVisible = false;
 
-            function updateClipStatus() {
-                var el = document.getElementById('clip-status');
-                if (!el) return;
-                var conn = window.spice_connection;
-                if (!conn) {
-                    el.textContent = 'Agent: not connected';
-                    el.style.color = '#f38ba8';
-                    return;
-                }
-                var caps = window._spiceAgentCaps;
-                if (caps) {
-                    var parts = ['Agent: connected'];
-                    if (caps.clipboard) parts.push('clipboard OK');
-                    else parts.push('no clipboard!');
-                    if (!caps.clipboard) {
-                        el.style.color = '#fab387';
-                        parts.push('- Use "Type it" button');
-                    } else {
-                        el.style.color = '#a6e3a1';
-                    }
-                    el.textContent = parts.join(' | ');
-                } else {
-                    el.textContent = 'Agent: connected (waiting for caps...)';
-                    el.style.color = '#f9e2af';
-                }
-            }
-
-            function toggleClipboardPanel() {
-                clipPanelVisible = !clipPanelVisible;
-                document.getElementById('clipboard-panel').style.display = clipPanelVisible ? 'block' : 'none';
-                if (clipPanelVisible) {
-                    if (window._spiceClipboardText) {
-                        document.getElementById('clip-from-vm').value = window._spiceClipboardText;
-                    }
-                    updateClipStatus();
-                }
-            }
-
-            // Update status when caps arrive
-            window.addEventListener('spice-agent-caps', function() {
-                updateClipStatus();
-            });
-
-            // Update the panel whenever guest copies something
-            window.addEventListener('spice-clipboard-update', function(e) {
-                document.getElementById('clip-from-vm').value = e.detail;
-                // Flash the clipboard button to notify user
-                var btn = document.getElementById('clipboardBtn');
-                btn.style.background = '#89b4fa';
-                btn.style.color = '#1e1e2e';
-                setTimeout(function() { btn.style.background = ''; btn.style.color = ''; }, 1500);
-            });
-
-            function sendClipToVm() {
-                var text = document.getElementById('clip-to-vm').value;
-                if (!text) return;
-                if (window.spice_connection) {
-                    // Store text and announce to guest via GRAB
-                    window._pendingClipboardText = text;
-                    window.spice_connection.clipboard_grab_text();
-                    // Also try direct send (some guests accept unsolicited data)
-                    if (window.spice_connection.send_clipboard_text) {
-                        window.spice_connection.send_clipboard_text(text);
-                    }
-                    document.getElementById('clip-to-vm').value = '';
-                } else {
-                    alert('SPICE agent not connected. Use "Type it" instead.');
-                }
-            }
-
-            function typeToVm() {
-                var text = document.getElementById('clip-to-vm').value;
-                if (!text) return;
-                var btn = document.getElementById('typeToVmBtn');
-                btn.disabled = true;
-                btn.textContent = 'Typing...';
-                if (window.spice_connection && window.spice_connection.typeText) {
-                    window.spice_connection.typeText(text, function(ok) {
-                        btn.disabled = false;
-                        btn.textContent = 'Type it';
-                        if (ok) document.getElementById('clip-to-vm').value = '';
-                    });
-                } else {
-                    alert('SPICE not connected');
-                    btn.disabled = false;
-                    btn.textContent = 'Type it';
-                }
-            }
-        </script>
     </body>
 </html>
