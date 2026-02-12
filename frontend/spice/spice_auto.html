@@ -229,13 +229,23 @@
             connect(undefined);
             document.getElementById('sendCtrlAltDel').addEventListener('click', function(){ SpiceHtml5.sendCtrlAltDel(sc); });
 
-            // Host-to-guest clipboard: notify guest when user copies/cuts on host
+            // Host-to-guest clipboard: send clipboard text to VM on paste
             document.addEventListener('paste', function(e) {
-                if (window.spice_connection && navigator.clipboard && navigator.clipboard.readText) {
-                    navigator.clipboard.readText().then(function(text) {
-                        if (text) {
-                            // Announce clipboard grab with UTF-8 type
-                            window.spice_connection.clipboard_grab_text();
+                if (!window.spice_connection) return;
+                // Get text directly from the paste event (works on HTTP and HTTPS)
+                var text = '';
+                if (e.clipboardData && e.clipboardData.getData) {
+                    text = e.clipboardData.getData('text/plain');
+                }
+                if (text && window.spice_connection.send_clipboard_text) {
+                    window.spice_connection.send_clipboard_text(text);
+                    return;
+                }
+                // Fallback: try async clipboard API (HTTPS only)
+                if (text === '' && navigator.clipboard && navigator.clipboard.readText) {
+                    navigator.clipboard.readText().then(function(clipText) {
+                        if (clipText && window.spice_connection.send_clipboard_text) {
+                            window.spice_connection.send_clipboard_text(clipText);
                         }
                     }).catch(function() {});
                 }
