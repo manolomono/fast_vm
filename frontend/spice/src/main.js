@@ -694,8 +694,24 @@ SpiceMainConn.prototype.typeText = function(text, callback)
 
 SpiceMainConn.prototype.resize_window = function(flags, width, height, depth, x, y)
 {
-    var monitors_config = new Messages.VDAgentMonitorsConfig(flags, width, height, depth, x, y);
-    this.send_agent_message(Constants.VD_AGENT_MONITORS_CONFIG, monitors_config);
+    console.log('SPICE: resize_window called:', width, 'x', height, 'agent_connected:', this.agent_connected, 'tokens:', this.agent_tokens);
+
+    // Build VDAgentMonitorsConfig payload manually (same approach as clipboard)
+    // Header: num_monitors(4) + flags(4) = 8 bytes
+    // Monitor: height(4) + width(4) + depth(4) + x(4) + y(4) = 20 bytes
+    var buf = new ArrayBuffer(28);
+    var dv = new DataView(buf);
+    dv.setUint32(0, 1, true);        // num_monitors = 1
+    dv.setUint32(4, flags, true);     // flags
+    dv.setUint32(8, height, true);    // height
+    dv.setUint32(12, width, true);    // width
+    dv.setUint32(16, depth, true);    // depth
+    dv.setInt32(20, x, true);         // x
+    dv.setInt32(24, y, true);         // y
+
+    var mr = this._build_raw_agent_msg(Constants.VD_AGENT_MONITORS_CONFIG, buf);
+    this.send_agent_message_queue(mr);
+    console.log('SPICE: resize message sent via raw agent msg');
 }
 
 SpiceMainConn.prototype.file_xfer_start = function(file)
