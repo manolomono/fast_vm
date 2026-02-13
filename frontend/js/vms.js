@@ -192,8 +192,11 @@ window.FastVM.vmMethods = {
                 this.guestInfo[vmId] = data.guest_info;
             }
         } catch (err) {
-            // Mark as unavailable - store error hint for UI
-            this.guestInfo[vmId] = { _error: err.message || 'unavailable' };
+            // Only set error if we have no cached data yet
+            if (!this.guestInfo[vmId] || this.guestInfo[vmId]._error) {
+                this.guestInfo[vmId] = { _error: err.message || 'unavailable' };
+            }
+            // Otherwise keep the last good cached result
         } finally {
             this.guestInfoLoading[vmId] = false;
         }
