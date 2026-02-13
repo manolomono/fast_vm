@@ -17,74 +17,119 @@ class QGAError(Exception):
 
 
 class QGAClient:
-    """Client for QEMU Guest Agent protocol over Unix socket."""
+    """Client for QEMU Guest Agent protocol over Unix socket.
+
+    Uses a persistent connection: all commands within a session share the
+    same socket so responses stay in order on the shared virtio-serial pipe.
+    """
 
     def __init__(self, socket_path: str, timeout: float = 5.0):
         self.socket_path = socket_path
         self.timeout = timeout
+        self._sock: Optional[socket.socket] = None
+        self._synced = False
 
-    def _send_recv(self, command: dict) -> dict:
-        """Send a QGA command and receive the response."""
-        cmd_name = command.get("execute", "unknown")
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        """Close the socket connection."""
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+            self._synced = False
+
+    def _ensure_connected(self):
+        """Lazily connect to the QGA socket on first use."""
+        if self._sock is not None:
+            return
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
+        sock.connect(self.socket_path)
+        self._sock = sock
+        self._synced = False
+
+    def _sync(self):
+        """Perform guest-sync-delimited handshake (once per connection)."""
+        if self._synced:
+            return
+        sock = self._sock
+
+        # Drain any stale buffered data from previous sessions
+        sock.setblocking(False)
         try:
-            sock.connect(self.socket_path)
-
-            # Drain any stale buffered data from previous sessions
-            sock.setblocking(False)
-            try:
-                while sock.recv(4096):
-                    pass
-            except (BlockingIOError, socket.error):
+            while sock.recv(4096):
                 pass
-            sock.setblocking(True)
-            sock.settimeout(self.timeout)
+        except (BlockingIOError, socket.error):
+            pass
+        sock.setblocking(True)
+        sock.settimeout(self.timeout)
 
-            # Use guest-sync-delimited to reset the agent's parser and
-            # establish a clean communication channel.
-            sync_id = random.randint(1, 2**31)
-            sync_cmd = json.dumps({
-                "execute": "guest-sync-delimited",
-                "arguments": {"id": sync_id}
-            }).encode() + b'\n'
-            sock.sendall(b'\xff' + sync_cmd)
+        # Use guest-sync-delimited to reset the agent's parser and
+        # establish a clean communication channel.
+        sync_id = random.randint(1, 2**31)
+        sync_cmd = json.dumps({
+            "execute": "guest-sync-delimited",
+            "arguments": {"id": sync_id}
+        }).encode() + b'\n'
+        sock.sendall(b'\xff' + sync_cmd)
 
-            # Read the sync response (may be prefixed with \xff)
-            sync_data = b''
-            sync_deadline = time.time() + self.timeout
-            while time.time() < sync_deadline:
+        # Read sync response — keep reading until we get our sync_id back.
+        # The agent may flush stale responses from previous sessions first.
+        deadline = time.time() + self.timeout
+        synced = False
+        while time.time() < deadline:
+            line = b''
+            while time.time() < deadline:
                 try:
                     chunk = sock.recv(4096)
                     if not chunk:
                         break
-                    sync_data += chunk
-                    if b'\n' in sync_data:
+                    line += chunk
+                    if b'\n' in line:
                         break
                 except socket.timeout:
                     break
-            # Parse sync response - strip \xff delimiters
-            sync_text = sync_data.replace(b'\xff', b'').strip()
-            if sync_text:
-                try:
-                    sync_resp = json.loads(sync_text)
-                    if sync_resp.get("return") != sync_id:
-                        logger.warning(f"QGA sync ID mismatch: expected {sync_id}, "
-                                       f"got {sync_resp.get('return')}")
-                except (json.JSONDecodeError, ValueError) as e:
-                    logger.warning(f"QGA sync response parse error: {e}, "
-                                   f"raw={sync_data!r}")
-            else:
-                logger.debug(f"QGA sync got no response (agent may be slow)")
+            clean = line.replace(b'\xff', b'').strip()
+            if not clean:
+                break
+            try:
+                resp = json.loads(clean)
+                if resp.get("return") == sync_id:
+                    synced = True
+                    break
+                else:
+                    logger.debug(f"QGA sync: discarding stale response: "
+                                 f"{str(resp)[:120]}")
+            except (json.JSONDecodeError, ValueError):
+                logger.debug(f"QGA sync: discarding non-JSON data: {line!r}")
 
-            # Send the actual command
+        if not synced:
+            logger.warning("QGA sync handshake did not get matching response, "
+                           "proceeding anyway")
+        self._synced = True
+
+    def _send_recv(self, command: dict) -> dict:
+        """Send a QGA command and receive the response on the persistent connection."""
+        cmd_name = command.get("execute", "unknown")
+        try:
+            self._ensure_connected()
+            self._sync()
+
+            # Send the command
             msg = json.dumps(command).encode() + b'\n'
-            sock.sendall(msg)
+            self._sock.sendall(msg)
 
             # Read response
             data = b''
             while True:
-                chunk = sock.recv(4096)
+                chunk = self._sock.recv(4096)
                 if not chunk:
                     break
                 data += chunk
@@ -98,19 +143,23 @@ class QGAClient:
                 raise QGAError(f"Empty response from guest agent for {cmd_name}")
             return json.loads(clean)
         except QGAError:
+            self.close()
             raise
         except socket.timeout:
+            self.close()
             raise QGAError(f"Timeout waiting for {cmd_name} (>{self.timeout}s)")
         except ConnectionRefusedError:
+            self.close()
             raise QGAError(f"Connection refused to QGA socket {self.socket_path}")
         except FileNotFoundError:
+            self.close()
             raise QGAError(f"QGA socket not found: {self.socket_path}")
         except json.JSONDecodeError as e:
+            self.close()
             raise QGAError(f"Invalid JSON response for {cmd_name}: {e}, raw={data!r}")
         except Exception as e:
+            self.close()
             raise QGAError(f"QGA communication error for {cmd_name}: {e}")
-        finally:
-            sock.close()
 
     def ping(self, retries: int = 3) -> bool:
         """Check if guest agent is responding (with retries for slow guests)."""
@@ -410,7 +459,6 @@ def get_qga_client(vm_dir: Path) -> QGAClient:
     sock_path = vm_dir / "qga.sock"
     if not sock_path.exists():
         raise QGAError(f"QGA socket not found: {sock_path}")
-    logger.debug(f"QGA client connecting to {sock_path}")
     return QGAClient(str(sock_path))
 
 
@@ -425,14 +473,13 @@ def guest_resize_display(vm_dir: Path, width: int, height: int) -> bool:
     Returns:
         True if resize command was sent successfully
     """
-    client = get_qga_client(vm_dir)
+    with get_qga_client(vm_dir) as client:
+        if not client.ping():
+            raise QGAError("Guest agent not responding")
 
-    if not client.ping():
-        raise QGAError("Guest agent not responding")
-
-    # Script that finds the connected output and applies preferred resolution
-    # or creates a new mode if needed. Works with both X11 and different output names.
-    resize_script = f"""
+        # Script that finds the connected output and applies preferred resolution
+        # or creates a new mode if needed. Works with both X11 and different output names.
+        resize_script = f"""
 export DISPLAY=:0 DISPLAY=:0.0
 # Find active X display
 for d in :0.0 :0 :1; do
@@ -475,10 +522,10 @@ if [ "$CURRENT" != "{width}x{height}" ]; then
 fi
 xrandr 2>/dev/null | grep '\\*' | head -1 | awk '{{print $1}}'
 """
-    try:
-        result = client.exec_command(resize_script, timeout=10)
-        logger.info(f"QGA resize result: {result.strip() if result else 'empty'}")
-        return True
-    except QGAError as e:
-        logger.warning(f"QGA resize failed: {e}")
-        raise
+        try:
+            result = client.exec_command(resize_script, timeout=10)
+            logger.info(f"QGA resize result: {result.strip() if result else 'empty'}")
+            return True
+        except QGAError as e:
+            logger.warning(f"QGA resize failed: {e}")
+            raise

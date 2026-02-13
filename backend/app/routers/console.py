@@ -138,14 +138,16 @@ async def get_guest_info(
 
     vm_dir = vm_manager.vms_dir / vm_id
     os_type = vm.get('os_type', 'linux')
+
+    def _fetch_guest_info():
+        with get_qga_client(vm_dir) as client:
+            return client.get_guest_info(os_type=os_type)
+
     try:
         loop = asyncio.get_event_loop()
-        client = get_qga_client(vm_dir)
         # 15s hard timeout so the request never hangs
         info = await asyncio.wait_for(
-            loop.run_in_executor(
-                None, lambda: client.get_guest_info(os_type=os_type)
-            ),
+            loop.run_in_executor(None, _fetch_guest_info),
             timeout=15.0,
         )
         return {"success": True, "guest_info": info}
