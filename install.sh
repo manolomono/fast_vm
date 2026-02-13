@@ -538,6 +538,10 @@ show_summary() {
     echo ""
     echo -e "  ${YELLOW}IMPORTANTE:${NC} Cambia la password del admin al primer acceso."
     echo ""
+    echo -e "  ${BOLD}Guest tools (instalar dentro de cada VM):${NC}"
+    echo "    Linux:   sudo apt install spice-vdagent qemu-guest-agent"
+    echo "    Windows: Instalar virtio-win-guest-tools.exe desde el CD VirtIO"
+    echo ""
 
     if [ "${USE_DOCKER:-false}" = true ]; then
         echo -e "  ${BOLD}Comandos utiles:${NC}"
