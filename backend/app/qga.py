@@ -229,7 +229,11 @@ class QGAClient:
         """
         # Fail fast: ping first to avoid slow sequential timeouts
         if not self.ping():
-            raise QGAError("Guest agent not responding (is qemu-guest-agent installed and running?)")
+            raise QGAError(
+                "Guest agent not responding. "
+                "Check: 1) qemu-guest-agent service is running, "
+                "2) VirtIO Serial driver is installed (Device Manager → System devices)"
+            )
 
         is_windows = os_type == "windows"
         info = {}

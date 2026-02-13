@@ -205,7 +205,7 @@ window.FastVM.vmMethods = {
     /** Extract the primary non-loopback IPv4 address from guest interfaces */
     guestIP(vmId) {
         const info = this.guestInfo[vmId];
-        if (!info || !info.interfaces) return null;
+        if (!info || !Array.isArray(info.interfaces)) return null;
         for (const iface of info.interfaces) {
             // Skip loopback on both Linux (lo) and Windows (Loopback...)
             const name = (iface.name || '').toLowerCase();
@@ -272,7 +272,7 @@ window.FastVM.vmMethods = {
     /** Get all non-loopback IPs */
     guestAllIPs(vmId) {
         const info = this.guestInfo[vmId];
-        if (!info || !info.interfaces) return [];
+        if (!info || !Array.isArray(info.interfaces)) return [];
         const ips = [];
         for (const iface of info.interfaces) {
             const name = (iface.name || '').toLowerCase();
