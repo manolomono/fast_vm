@@ -97,6 +97,10 @@ function dashboard() {
         _wsReconnectTimer: null,
         _wsReconnectAttempts: 0,
 
+        // Guest info (from QGA)
+        guestInfo: {},       // { vmId: { hostname, os, interfaces, ... } }
+        guestInfoLoading: {},  // { vmId: true/false }
+
         // Snapshots
         vmSnapshots: {},
         snapshotForm: { name: '', description: '' },
@@ -128,8 +132,11 @@ function dashboard() {
                 this.ready = true;
                 injectModals();
 
-                // Auto-refresh cada 10s
+                // Auto-refresh cada 10s (VMs + metrics), guest info cada 30s
                 setInterval(() => { this.loadVMs(); this.loadMetrics(); }, 10000);
+                setInterval(() => {
+                    this.vms.filter(v => v.status === 'running').forEach(vm => this.loadGuestInfo(vm.id));
+                }, 30000);
                 this.loadMetrics();
                 if (this.user?.is_admin) this.loadUsers();
 

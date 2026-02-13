@@ -180,4 +180,109 @@ window.FastVM.vmMethods = {
         const target = form === 'edit' ? this.editTarget : this.createForm;
         target.networks.splice(index, 1);
     },
+
+    // ==================== Guest Info (QGA) ====================
+
+    async loadGuestInfo(vmId) {
+        if (this.guestInfoLoading[vmId]) return;
+        this.guestInfoLoading[vmId] = true;
+        try {
+            const data = await FastVM.api(`/vms/${vmId}/guest-info`);
+            if (data.success) {
+                this.guestInfo[vmId] = data.guest_info;
+            }
+        } catch (err) {
+            // Only set error if we have no cached data yet
+            if (!this.guestInfo[vmId] || this.guestInfo[vmId]._error) {
+                this.guestInfo[vmId] = { _error: err.message || 'unavailable' };
+            }
+            // Otherwise keep the last good cached result
+        } finally {
+            this.guestInfoLoading[vmId] = false;
+        }
+    },
+
+    /** Extract the primary non-loopback IPv4 address from guest interfaces */
+    guestIP(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info || !Array.isArray(info.interfaces)) return null;
+        for (const iface of info.interfaces) {
+            // Skip loopback on both Linux (lo) and Windows (Loopback...)
+            const name = (iface.name || '').toLowerCase();
+            if (name === 'lo' || name.includes('loopback')) continue;
+            const addrs = iface['ip-addresses'] || [];
+            for (const addr of addrs) {
+                if (addr['ip-address-type'] === 'ipv4' && addr['ip-address'] !== '127.0.0.1') {
+                    return addr['ip-address'];
+                }
+            }
+        }
+        return null;
+    },
+
+    /** Get guest hostname string */
+    guestHostname(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info || !info.hostname) return null;
+        return info.hostname['host-name'] || null;
+    },
+
+    /** Get guest OS description */
+    guestOS(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info || !info.os) return null;
+        const os = info.os;
+        if (os['pretty-name']) return os['pretty-name'];
+        if (os.name) return os.name + (os.version ? ' ' + os.version : '');
+        return os.id || null;
+    },
+
+    /** Get guest uptime */
+    guestUptime(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info) return null;
+        return info.uptime || null;
+    },
+
+    /** Get root/C: filesystem usage as {used, total, percent} in GB */
+    guestDisk(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info || !info.filesystems || info.filesystems.length === 0) return null;
+        // Find root (Linux) or C: (Windows) or largest filesystem
+        let root = info.filesystems.find(fs => fs.mountpoint === '/');
+        if (!root) root = info.filesystems.find(fs =>
+            fs.mountpoint && fs.mountpoint.toUpperCase().startsWith('C:')
+        );
+        if (!root) {
+            root = info.filesystems.reduce((a, b) =>
+                (b['total-bytes'] || 0) > (a['total-bytes'] || 0) ? b : a
+            );
+        }
+        if (!root) return null;
+        const total = (root['total-bytes'] || 0) / (1024 ** 3);
+        const used = (root['used-bytes'] || 0) / (1024 ** 3);
+        if (total === 0) return null;
+        return {
+            used: used.toFixed(1),
+            total: total.toFixed(1),
+            percent: Math.round((used / total) * 100)
+        };
+    },
+
+    /** Get all non-loopback IPs */
+    guestAllIPs(vmId) {
+        const info = this.guestInfo[vmId];
+        if (!info || !Array.isArray(info.interfaces)) return [];
+        const ips = [];
+        for (const iface of info.interfaces) {
+            const name = (iface.name || '').toLowerCase();
+            if (name === 'lo' || name.includes('loopback')) continue;
+            for (const addr of (iface['ip-addresses'] || [])) {
+                if (addr['ip-address'] !== '127.0.0.1' && addr['ip-address'] !== '::1') {
+                    ips.push({ iface: iface.name, ip: addr['ip-address'], type: addr['ip-address-type'] });
+                }
+            }
+        }
+        return ips;
+    },
 };

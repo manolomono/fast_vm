@@ -53,14 +53,22 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 - **Paquetes automaticos** - Instala spice-vdagent, qemu-guest-agent y lo que necesites
 - **Uso sencillo** - Genera la ISO y usala como secondary ISO al crear/editar una VM
 
+### Guest Info via QGA
+- **QEMU Guest Agent** - Informacion del guest OS en tiempo real (IP, hostname, OS, uptime, disco)
+- **Conexion persistente** - Una sola conexion por sesion para evitar desincronizacion de respuestas
+- **Protocolo guest-sync-delimited** - Handshake completo para comunicacion fiable con Windows y Linux
+- **Cache inteligente** - Ultima respuesta valida cacheada para evitar parpadeos en la UI
+- **Soporte Windows y Linux** - Deteccion automatica de OS, fallbacks con wmic para Windows
+
 ### Consola SPICE
 - **SPICE HTML5** - Acceso remoto de alta calidad desde el navegador
 - **Proxy WebSocket integrado** - Conexion directa sin puertos adicionales (`/ws/spice/{vm_id}`)
 - **Panel dividido** - Ver el dashboard y la consola simultaneamente
 - **Fullscreen** - Modo pantalla completa para la consola
-- **Clipboard compartido** - Copiar/pegar entre host y guest (con spice-vdagent)
-- **Resize automatico** - La resolucion se adapta al tamano de la ventana
+- **Clipboard bidireccional** - Copiar/pegar entre host y guest via SPICE agent nativo
+- **Resize automatico** - La resolucion se adapta al tamano de la ventana (QXL + QGA xrandr para Linux)
 - **Redireccion USB** - Soporte para 2 dispositivos USB redirigidos
+- **Auto-install guest tools** - Instalacion automatica de spice-vdagent y qemu-guest-agent en Linux
 
 ### Redes Avanzadas
 - **NAT** - Red privada con acceso a internet y port forwarding
@@ -101,7 +109,8 @@ Panel dividido que permite ver la consola de la VM directamente en el navegador 
 - **Endpoints de historial** - `/api/metrics/history` y `/api/vms/{id}/metrics/history`
 
 ### Testing
-- **48 tests** - Suite completa con pytest + pytest-asyncio
+- **48+ tests backend** - Suite completa con pytest + pytest-asyncio
+- **60 tests del instalador** - Suite de tests para install.sh con mocking
 - **Tests de auth** - Login, logout, permisos, cambio de contrasena, gestion de usuarios
 - **Tests de API** - CRUD de VMs, volumes, clone, cloud-init, metricas, ISOs
 - **Tests de consola** - Endpoints de SPICE y VNC
@@ -298,11 +307,13 @@ Todos los endpoints (excepto login y health) requieren header `Authorization: Be
 ### Cloud-init
 - `POST /api/cloudinit` - Crear ISO cloud-init para provisioning automatico
 
-### Consola (`/api/vms/{vm_id}`)
+### Consola y Guest Agent (`/api/vms/{vm_id}`)
 - `GET /api/vms/{vm_id}/spice` - Obtener conexion SPICE (inicia proxy WebSocket)
 - `POST /api/vms/{vm_id}/spice/disconnect` - Desconectar proxy SPICE
 - `GET /api/vms/{vm_id}/vnc` - Obtener conexion VNC (legacy)
 - `POST /api/vms/{vm_id}/vnc/disconnect` - Desconectar proxy VNC
+- `GET /api/vms/{vm_id}/guest-info` - Info del guest via QGA (IP, hostname, OS, disco, uptime)
+- `POST /api/vms/{vm_id}/resize` - Redimensionar display del guest via QGA
 - `WS /ws/spice/{vm_id}` - WebSocket proxy SPICE
 
 ### Volumenes (`/api/volumes`)
@@ -388,6 +399,7 @@ fast_vm/
 │   │   ├── auth.py             # Autenticacion JWT + bcrypt
 │   │   ├── models.py           # Modelos Pydantic (VM, Volume, Snapshot, Auth)
 │   │   ├── vm_manager.py       # Gestor de VMs con QEMU
+│   │   ├── qga.py              # Cliente QGA (Guest Agent) con conexion persistente
 │   │   ├── database.py         # Base de datos SQLite (metricas, audit)
 │   │   ├── audit.py            # Sistema de logs de auditoria
 │   │   ├── logging_config.py   # Configuracion de logging
@@ -467,15 +479,20 @@ El frontend usa **Alpine.js** como framework reactivo con un patron de namespace
 ### Windows
 
 1. Durante la instalacion, cargar drivers VirtIO desde el CD secundario
-2. Despues de instalar, ejecutar `virtio-win-guest-tools.exe` desde el CD
-3. Instalar SPICE Guest Tools para clipboard y resize
+2. Despues de instalar, ejecutar `virtio-win-guest-tools.exe` desde el CD (incluye VirtIO Serial driver, SPICE agent y QEMU Guest Agent)
+3. Verificar en Device Manager que "VirtIO Serial Driver" aparece en System devices
+4. Verificar que el servicio "QEMU Guest Agent" esta en ejecucion (`services.msc`)
+
+> El Guest Info panel (IP, hostname, OS, disco, uptime) requiere el QEMU Guest Agent funcionando y el driver VirtIO Serial instalado.
 
 ### Linux (Debian/Ubuntu)
 
 ```bash
-sudo apt install spice-vdagent xserver-xorg-video-qxl
-sudo systemctl enable spice-vdagent
+sudo apt install spice-vdagent qemu-guest-agent xserver-xorg-video-qxl
+sudo systemctl enable spice-vdagent qemu-guest-agent
 ```
+
+> En VMs Linux creadas con Fast VM, spice-vdagent y qemu-guest-agent se instalan automaticamente si se usa cloud-init o si la VM tiene acceso a internet.
 
 ### Android-x86
 
@@ -557,6 +574,23 @@ sudo apt install spice-vdagent xserver-xorg-video-qxl
 sudo systemctl restart spice-vdagent
 ```
 
+### Guest Info no aparece (503/504)
+
+```bash
+# Dentro de la VM Windows:
+# 1. Verificar servicio QGA
+sc query QEMU-GA              # Debe estar RUNNING
+sc start QEMU-GA              # Si esta parado
+
+# 2. Verificar driver VirtIO Serial
+# Device Manager → System devices → VirtIO Serial Driver
+# Si no aparece, instalar virtio-win-guest-tools.exe
+
+# Dentro de la VM Linux:
+sudo systemctl status qemu-guest-agent
+sudo systemctl start qemu-guest-agent
+```
+
 ### Dependencias frontend no encontradas
 
 Si la interfaz web no carga correctamente (pagina en blanco), descarga las dependencias:
@@ -580,6 +614,11 @@ bash frontend/vendor/download.sh
 - [x] Clonacion de VMs (copy-on-write, nuevas MACs)
 - [x] Cloud-init (generador de ISOs desde el dashboard)
 - [x] Consola SPICE integrada con proxy WebSocket
+- [x] Clipboard bidireccional host-guest (via SPICE agent nativo)
+- [x] Auto-resize de display (QXL + QGA xrandr para Linux)
+- [x] Guest Info via QGA (IP, hostname, OS, uptime, disco) - Windows y Linux
+- [x] Deteccion automatica de OS por VM (os_type)
+- [x] Auto-instalacion de guest tools en Linux (spice-vdagent, qemu-guest-agent)
 - [x] Redes: NAT con port forwarding, Bridge, MacVTAP, Isolated
 - [x] UEFI + Secure Boot
 - [x] TPM 2.0 emulado
@@ -596,7 +635,7 @@ bash frontend/vendor/download.sh
 - [x] Instalador interactivo para Linux
 - [x] Despliegue con Docker Compose
 - [x] Arquitectura modular: backend (8 routers) + frontend (8 modulos JS)
-- [x] Tests unitarios e integracion (48 tests)
+- [x] Tests unitarios e integracion (48+ tests backend + 60 tests instalador)
 - [x] Rate limiting y cabeceras de seguridad
 - [x] Servicio systemd (via instalador)
 

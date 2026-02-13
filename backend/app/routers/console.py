@@ -7,7 +7,7 @@ import logging
 from ..models import VNCConnectionInfo, SpiceConnectionInfo, VMResponse
 from ..auth import get_current_user, UserInfo as AuthUserInfo
 from ..deps import vm_manager
-from ..qga import guest_resize_display, QGAError
+from ..qga import guest_resize_display, get_qga_client, QGAError
 
 logger = logging.getLogger("fast_vm.routers.console")
 
@@ -114,6 +114,50 @@ async def resize_vm_display(
         raise HTTPException(status_code=503, detail=f"Guest agent error: {e}")
     except Exception as e:
         logger.error(f"Resize error for VM {vm_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==================== Guest Agent Info ====================
+
+
+@router.get("/vms/{vm_id}/guest-info")
+async def get_guest_info(
+    vm_id: str,
+    current_user: AuthUserInfo = Depends(get_current_user),
+):
+    """Get guest OS information via QEMU Guest Agent.
+
+    Returns hostname, OS, network interfaces, users, filesystems, uptime.
+    """
+    if vm_id not in vm_manager.vms:
+        raise HTTPException(status_code=404, detail="VM not found")
+
+    vm = vm_manager.vms[vm_id]
+    if vm.get('status') != 'running':
+        raise HTTPException(status_code=400, detail="VM is not running")
+
+    vm_dir = vm_manager.vms_dir / vm_id
+    os_type = vm.get('os_type', 'linux')
+
+    def _fetch_guest_info():
+        with get_qga_client(vm_dir) as client:
+            return client.get_guest_info(os_type=os_type)
+
+    try:
+        loop = asyncio.get_event_loop()
+        # 15s hard timeout so the request never hangs
+        info = await asyncio.wait_for(
+            loop.run_in_executor(None, _fetch_guest_info),
+            timeout=15.0,
+        )
+        return {"success": True, "guest_info": info}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Guest agent timed out")
+    except QGAError as e:
+        logger.warning(f"QGA error for VM {vm_id} (os_type={os_type}): {e}")
+        raise HTTPException(status_code=503, detail=f"Guest agent not available: {e}")
+    except Exception as e:
+        logger.error(f"Guest info error for VM {vm_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

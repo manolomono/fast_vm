@@ -568,10 +568,14 @@ class VMManager:
             "-spice", f"port={spice_port},addr=127.0.0.1,disable-ticketing=on,streaming-video=off,agent-mouse=on",
             # QXL display for best SPICE experience
             "-device", "qxl-vga,vgamem_mb=64",
+            # VirtIO serial bus for SPICE agent and QGA channels
+            "-device", "virtio-serial-pci,id=virtio-serial0",
             # SPICE agent channel for clipboard, mouse, and display resize
-            "-device", "virtio-serial-pci",
             "-chardev", "spicevmc,id=vdagent,name=vdagent",
-            "-device", "virtserialport,chardev=vdagent,name=com.redhat.spice.0",
+            "-device", "virtserialport,bus=virtio-serial0.0,nr=1,chardev=vdagent,name=com.redhat.spice.0",
+            # QEMU Guest Agent (QGA) channel for host-to-guest commands (resize, etc.)
+            "-chardev", f"socket,path={vm_dir / 'qga.sock'},server=on,wait=off,id=qga0",
+            "-device", "virtserialport,bus=virtio-serial0.0,nr=2,chardev=qga0,name=org.qemu.guest_agent.0",
             # USB redirection support
             "-device", "ich9-usb-ehci1,id=usb",
             "-device", "ich9-usb-uhci1,masterbus=usb.0,firstport=0,multifunction=on",
@@ -581,9 +585,6 @@ class VMManager:
             "-device", "usb-redir,chardev=usbredirchardev1,id=usbredirdev1",
             "-chardev", "spicevmc,id=usbredirchardev2,name=usbredir",
             "-device", "usb-redir,chardev=usbredirchardev2,id=usbredirdev2",
-            # QEMU Guest Agent (QGA) channel for host-to-guest commands (resize, etc.)
-            "-chardev", f"socket,path={vm_dir / 'qga.sock'},server=on,wait=off,id=qga0",
-            "-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
             # Input devices
             "-device", "usb-tablet",
             "-monitor", f"unix:{monitor_file},server,nowait",
