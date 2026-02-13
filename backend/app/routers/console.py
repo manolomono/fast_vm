@@ -137,10 +137,13 @@ async def get_guest_info(
         raise HTTPException(status_code=400, detail="VM is not running")
 
     vm_dir = vm_manager.vms_dir / vm_id
+    os_type = vm.get('os_type', 'linux')
     try:
         loop = asyncio.get_event_loop()
         client = get_qga_client(vm_dir)
-        info = await loop.run_in_executor(None, client.get_guest_info)
+        info = await loop.run_in_executor(
+            None, lambda: client.get_guest_info(os_type=os_type)
+        )
         return {"success": True, "guest_info": info}
     except QGAError as e:
         raise HTTPException(status_code=503, detail=f"Guest agent not available: {e}")

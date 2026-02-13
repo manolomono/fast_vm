@@ -204,7 +204,9 @@ window.FastVM.vmMethods = {
         const info = this.guestInfo[vmId];
         if (!info || !info.interfaces) return null;
         for (const iface of info.interfaces) {
-            if (iface.name === 'lo') continue;
+            // Skip loopback on both Linux (lo) and Windows (Loopback...)
+            const name = (iface.name || '').toLowerCase();
+            if (name === 'lo' || name.includes('loopback')) continue;
             const addrs = iface['ip-addresses'] || [];
             for (const addr of addrs) {
                 if (addr['ip-address-type'] === 'ipv4' && addr['ip-address'] !== '127.0.0.1') {
@@ -239,13 +241,16 @@ window.FastVM.vmMethods = {
         return info.uptime || null;
     },
 
-    /** Get root filesystem usage as {used, total, percent} in GB */
+    /** Get root/C: filesystem usage as {used, total, percent} in GB */
     guestDisk(vmId) {
         const info = this.guestInfo[vmId];
-        if (!info || !info.filesystems) return null;
-        // Find root mount or largest filesystem
+        if (!info || !info.filesystems || info.filesystems.length === 0) return null;
+        // Find root (Linux) or C: (Windows) or largest filesystem
         let root = info.filesystems.find(fs => fs.mountpoint === '/');
-        if (!root && info.filesystems.length > 0) {
+        if (!root) root = info.filesystems.find(fs =>
+            fs.mountpoint && fs.mountpoint.toUpperCase().startsWith('C:')
+        );
+        if (!root) {
             root = info.filesystems.reduce((a, b) =>
                 (b['total-bytes'] || 0) > (a['total-bytes'] || 0) ? b : a
             );
@@ -267,7 +272,8 @@ window.FastVM.vmMethods = {
         if (!info || !info.interfaces) return [];
         const ips = [];
         for (const iface of info.interfaces) {
-            if (iface.name === 'lo') continue;
+            const name = (iface.name || '').toLowerCase();
+            if (name === 'lo' || name.includes('loopback')) continue;
             for (const addr of (iface['ip-addresses'] || [])) {
                 if (addr['ip-address'] !== '127.0.0.1' && addr['ip-address'] !== '::1') {
                     ips.push({ iface: iface.name, ip: addr['ip-address'], type: addr['ip-address-type'] });

@@ -67,24 +67,34 @@ class QGAClient:
         except Exception:
             return False
 
-    def exec_command(self, command: str, timeout: int = 10) -> Optional[str]:
+    def exec_command(self, command: str, timeout: int = 10,
+                     shell: str = "sh") -> Optional[str]:
         """Execute a shell command in the guest and return stdout.
 
         Args:
             command: Shell command to execute
             timeout: Max seconds to wait for command completion
+            shell: Shell to use - "sh" (Linux), "cmd" (Windows), "powershell" (Windows)
 
         Returns:
             stdout output as string, or None if failed
         """
-        # Start the process
-        cmd_b64 = base64.b64encode(command.encode()).decode()
+        if shell == "cmd":
+            path = "cmd.exe"
+            args = ["/c", command]
+        elif shell == "powershell":
+            path = "powershell.exe"
+            args = ["-NoProfile", "-NonInteractive", "-Command", command]
+        else:
+            path = "/bin/sh"
+            args = ["-c", command]
+
         try:
             resp = self._send_recv({
                 "execute": "guest-exec",
                 "arguments": {
-                    "path": "/bin/sh",
-                    "arg": ["-c", command],
+                    "path": path,
+                    "arg": args,
                     "capture-output": True
                 }
             })
@@ -149,65 +159,170 @@ class QGAClient:
             raise QGAError(f"{command} error: {resp['error']}")
         return resp.get("return", {})
 
-    def get_guest_info(self) -> dict:
+    def get_guest_info(self, os_type: str = "linux") -> dict:
         """Collect comprehensive guest information via native QGA commands.
 
-        Returns a dict with: hostname, os, interfaces, users, filesystems.
+        Args:
+            os_type: "linux", "windows", or "other"
+
+        Returns a dict with: hostname, os, interfaces, users, filesystems, uptime.
         Each field is None if the corresponding QGA command fails.
         """
+        is_windows = os_type == "windows"
         info = {}
 
-        # Hostname
+        # Hostname - native QGA, works on both Linux and Windows
         try:
             info["hostname"] = self.query("guest-get-host-name")
         except QGAError:
             info["hostname"] = None
 
-        # OS info
+        # OS info - native QGA (may not be available on older Windows QGA)
         try:
             info["os"] = self.query("guest-get-osinfo")
         except QGAError:
             info["os"] = None
+        # Windows fallback: use systeminfo via cmd
+        if info["os"] is None and is_windows:
+            try:
+                out = self.exec_command(
+                    'systeminfo | findstr /B /C:"OS Name" /C:"OS Version"',
+                    timeout=10, shell="cmd"
+                )
+                if out and out.strip():
+                    lines = out.strip().splitlines()
+                    name = ""
+                    version = ""
+                    for line in lines:
+                        if "OS Name" in line:
+                            name = line.split(":", 1)[-1].strip()
+                        elif "OS Version" in line:
+                            version = line.split(":", 1)[-1].strip()
+                    info["os"] = {
+                        "pretty-name": name or "Windows",
+                        "version": version,
+                        "id": "mswindows",
+                    }
+            except QGAError:
+                pass
 
-        # Network interfaces (IPs, MACs)
+        # Network interfaces (IPs, MACs) - native QGA, works on both
         try:
             info["interfaces"] = self.query("guest-network-get-interfaces")
         except QGAError:
             info["interfaces"] = None
 
-        # Logged-in users
+        # Logged-in users - native QGA
         try:
             info["users"] = self.query("guest-get-users")
         except QGAError:
             info["users"] = None
 
-        # Filesystems (mount points, space)
+        # Filesystems - native QGA
         try:
             info["filesystems"] = self.query("guest-get-fsinfo")
         except QGAError:
             info["filesystems"] = None
 
-        # Uptime via guest-exec (no native command for this)
-        try:
-            uptime = self.exec_command("cat /proc/uptime 2>/dev/null || echo ''", timeout=5)
-            if uptime and uptime.strip():
-                secs = int(float(uptime.strip().split()[0]))
-                days, rem = divmod(secs, 86400)
-                hours, rem = divmod(rem, 3600)
-                mins, _ = divmod(rem, 60)
-                parts = []
-                if days:
-                    parts.append(f"{days}d")
-                if hours:
-                    parts.append(f"{hours}h")
-                parts.append(f"{mins}m")
-                info["uptime"] = " ".join(parts)
-            else:
+        # Windows: guest-get-fsinfo often lacks total-bytes/used-bytes.
+        # Enrich with wmic data.
+        if is_windows and info["filesystems"] is not None:
+            has_bytes = any(
+                fs.get("total-bytes") for fs in info["filesystems"]
+            )
+            if not has_bytes:
+                try:
+                    out = self.exec_command(
+                        "wmic logicaldisk get caption,size,freespace /format:csv",
+                        timeout=10, shell="cmd"
+                    )
+                    if out:
+                        disk_map = {}
+                        for line in out.strip().splitlines():
+                            parts = line.strip().split(",")
+                            if len(parts) >= 4 and parts[1] and parts[1] != "Caption":
+                                caption = parts[1].rstrip("\\")
+                                try:
+                                    free = int(parts[2]) if parts[2] else 0
+                                    total = int(parts[3]) if parts[3] else 0
+                                    disk_map[caption] = {"total": total, "free": free}
+                                except ValueError:
+                                    pass
+                        for fs in info["filesystems"]:
+                            mp = fs.get("mountpoint", "").rstrip("\\")
+                            if mp in disk_map:
+                                fs["total-bytes"] = disk_map[mp]["total"]
+                                fs["used-bytes"] = disk_map[mp]["total"] - disk_map[mp]["free"]
+                except QGAError:
+                    pass
+        # Linux: if guest-get-fsinfo lacks bytes, try df
+        elif not is_windows and info["filesystems"] is not None:
+            has_bytes = any(
+                fs.get("total-bytes") for fs in info["filesystems"]
+            )
+            if not has_bytes:
+                try:
+                    out = self.exec_command("df -B1 --output=target,size,used 2>/dev/null", timeout=5)
+                    if out:
+                        df_map = {}
+                        for line in out.strip().splitlines()[1:]:
+                            parts = line.split()
+                            if len(parts) >= 3:
+                                try:
+                                    df_map[parts[0]] = {"total": int(parts[1]), "used": int(parts[2])}
+                                except ValueError:
+                                    pass
+                        for fs in info["filesystems"]:
+                            mp = fs.get("mountpoint", "")
+                            if mp in df_map:
+                                fs["total-bytes"] = df_map[mp]["total"]
+                                fs["used-bytes"] = df_map[mp]["used"]
+                except QGAError:
+                    pass
+
+        # Uptime
+        if is_windows:
+            try:
+                out = self.exec_command(
+                    'powershell -NoProfile -Command "'
+                    '$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; '
+                    '$span = (Get-Date) - $boot; '
+                    'Write-Output ($span.TotalSeconds -as [int])"',
+                    timeout=10, shell="cmd"
+                )
+                if out and out.strip().isdigit():
+                    secs = int(out.strip())
+                    info["uptime"] = self._format_uptime(secs)
+                else:
+                    info["uptime"] = None
+            except QGAError:
                 info["uptime"] = None
-        except QGAError:
-            info["uptime"] = None
+        else:
+            try:
+                out = self.exec_command("cat /proc/uptime 2>/dev/null", timeout=5)
+                if out and out.strip():
+                    secs = int(float(out.strip().split()[0]))
+                    info["uptime"] = self._format_uptime(secs)
+                else:
+                    info["uptime"] = None
+            except QGAError:
+                info["uptime"] = None
 
         return info
+
+    @staticmethod
+    def _format_uptime(secs: int) -> str:
+        """Format seconds into human-readable uptime string."""
+        days, rem = divmod(secs, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins, _ = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        parts.append(f"{mins}m")
+        return " ".join(parts)
 
 
 def get_qga_client(vm_dir: Path) -> QGAClient:
