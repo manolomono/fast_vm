@@ -132,6 +132,84 @@ class QGAClient:
         raise QGAError(f"Command timed out after {timeout}s")
 
 
+    def query(self, command: str) -> dict:
+        """Execute a QGA query command (no arguments) and return the result.
+
+        Args:
+            command: QGA command name (e.g. 'guest-get-osinfo')
+
+        Returns:
+            The 'return' value from the QGA response
+        """
+        try:
+            resp = self._send_recv({"execute": command})
+        except Exception as e:
+            raise QGAError(f"Failed to execute {command}: {e}")
+        if "error" in resp:
+            raise QGAError(f"{command} error: {resp['error']}")
+        return resp.get("return", {})
+
+    def get_guest_info(self) -> dict:
+        """Collect comprehensive guest information via native QGA commands.
+
+        Returns a dict with: hostname, os, interfaces, users, filesystems.
+        Each field is None if the corresponding QGA command fails.
+        """
+        info = {}
+
+        # Hostname
+        try:
+            info["hostname"] = self.query("guest-get-host-name")
+        except QGAError:
+            info["hostname"] = None
+
+        # OS info
+        try:
+            info["os"] = self.query("guest-get-osinfo")
+        except QGAError:
+            info["os"] = None
+
+        # Network interfaces (IPs, MACs)
+        try:
+            info["interfaces"] = self.query("guest-network-get-interfaces")
+        except QGAError:
+            info["interfaces"] = None
+
+        # Logged-in users
+        try:
+            info["users"] = self.query("guest-get-users")
+        except QGAError:
+            info["users"] = None
+
+        # Filesystems (mount points, space)
+        try:
+            info["filesystems"] = self.query("guest-get-fsinfo")
+        except QGAError:
+            info["filesystems"] = None
+
+        # Uptime via guest-exec (no native command for this)
+        try:
+            uptime = self.exec_command("cat /proc/uptime 2>/dev/null || echo ''", timeout=5)
+            if uptime and uptime.strip():
+                secs = int(float(uptime.strip().split()[0]))
+                days, rem = divmod(secs, 86400)
+                hours, rem = divmod(rem, 3600)
+                mins, _ = divmod(rem, 60)
+                parts = []
+                if days:
+                    parts.append(f"{days}d")
+                if hours:
+                    parts.append(f"{hours}h")
+                parts.append(f"{mins}m")
+                info["uptime"] = " ".join(parts)
+            else:
+                info["uptime"] = None
+        except QGAError:
+            info["uptime"] = None
+
+        return info
+
+
 def get_qga_client(vm_dir: Path) -> QGAClient:
     """Get a QGA client for a VM directory."""
     sock_path = vm_dir / "qga.sock"
