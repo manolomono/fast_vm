@@ -18,7 +18,7 @@ class QGAError(Exception):
 class QGAClient:
     """Client for QEMU Guest Agent protocol over Unix socket."""
 
-    def __init__(self, socket_path: str, timeout: float = 5.0):
+    def __init__(self, socket_path: str, timeout: float = 3.0):
         self.socket_path = socket_path
         self.timeout = timeout
 
@@ -167,7 +167,12 @@ class QGAClient:
 
         Returns a dict with: hostname, os, interfaces, users, filesystems, uptime.
         Each field is None if the corresponding QGA command fails.
+        Raises QGAError if the guest agent is not responding at all.
         """
+        # Fail fast: ping first to avoid slow sequential timeouts
+        if not self.ping():
+            raise QGAError("Guest agent not responding (is qemu-guest-agent installed and running?)")
+
         is_windows = os_type == "windows"
         info = {}
 

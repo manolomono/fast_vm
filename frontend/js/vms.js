@@ -192,8 +192,8 @@ window.FastVM.vmMethods = {
                 this.guestInfo[vmId] = data.guest_info;
             }
         } catch (err) {
-            // QGA not available - clear info silently
-            this.guestInfo[vmId] = null;
+            // Mark as unavailable - store error hint for UI
+            this.guestInfo[vmId] = { _error: err.message || 'unavailable' };
         } finally {
             this.guestInfoLoading[vmId] = false;
         }
