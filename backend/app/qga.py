@@ -1,5 +1,6 @@
 """QEMU Guest Agent (QGA) helper for executing commands inside VMs."""
 import json
+import random
 import socket
 import base64
 import time
@@ -18,20 +19,19 @@ class QGAError(Exception):
 class QGAClient:
     """Client for QEMU Guest Agent protocol over Unix socket."""
 
-    def __init__(self, socket_path: str, timeout: float = 3.0):
+    def __init__(self, socket_path: str, timeout: float = 5.0):
         self.socket_path = socket_path
         self.timeout = timeout
 
     def _send_recv(self, command: dict) -> dict:
         """Send a QGA command and receive the response."""
+        cmd_name = command.get("execute", "unknown")
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
         try:
             sock.connect(self.socket_path)
-            # Sync first to clear any pending data
-            sock.sendall(b'\xff')
-            time.sleep(0.1)
-            # Drain any buffered data
+
+            # Drain any stale buffered data from previous sessions
             sock.setblocking(False)
             try:
                 while sock.recv(4096):
@@ -40,6 +40,42 @@ class QGAClient:
                 pass
             sock.setblocking(True)
             sock.settimeout(self.timeout)
+
+            # Use guest-sync-delimited to reset the agent's parser and
+            # establish a clean communication channel.
+            sync_id = random.randint(1, 2**31)
+            sync_cmd = json.dumps({
+                "execute": "guest-sync-delimited",
+                "arguments": {"id": sync_id}
+            }).encode() + b'\n'
+            sock.sendall(b'\xff' + sync_cmd)
+
+            # Read the sync response (may be prefixed with \xff)
+            sync_data = b''
+            sync_deadline = time.time() + self.timeout
+            while time.time() < sync_deadline:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    sync_data += chunk
+                    if b'\n' in sync_data:
+                        break
+                except socket.timeout:
+                    break
+            # Parse sync response - strip \xff delimiters
+            sync_text = sync_data.replace(b'\xff', b'').strip()
+            if sync_text:
+                try:
+                    sync_resp = json.loads(sync_text)
+                    if sync_resp.get("return") != sync_id:
+                        logger.warning(f"QGA sync ID mismatch: expected {sync_id}, "
+                                       f"got {sync_resp.get('return')}")
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"QGA sync response parse error: {e}, "
+                                   f"raw={sync_data!r}")
+            else:
+                logger.debug(f"QGA sync got no response (agent may be slow)")
 
             # Send the actual command
             msg = json.dumps(command).encode() + b'\n'
@@ -55,17 +91,39 @@ class QGAClient:
                 # QGA responses are single-line JSON
                 if b'\n' in data:
                     break
-            return json.loads(data.strip())
+
+            # Strip \xff delimiters that may be present in response
+            clean = data.replace(b'\xff', b'').strip()
+            if not clean:
+                raise QGAError(f"Empty response from guest agent for {cmd_name}")
+            return json.loads(clean)
+        except QGAError:
+            raise
+        except socket.timeout:
+            raise QGAError(f"Timeout waiting for {cmd_name} (>{self.timeout}s)")
+        except ConnectionRefusedError:
+            raise QGAError(f"Connection refused to QGA socket {self.socket_path}")
+        except FileNotFoundError:
+            raise QGAError(f"QGA socket not found: {self.socket_path}")
+        except json.JSONDecodeError as e:
+            raise QGAError(f"Invalid JSON response for {cmd_name}: {e}, raw={data!r}")
+        except Exception as e:
+            raise QGAError(f"QGA communication error for {cmd_name}: {e}")
         finally:
             sock.close()
 
-    def ping(self) -> bool:
-        """Check if guest agent is responding."""
-        try:
-            resp = self._send_recv({"execute": "guest-ping"})
-            return "return" in resp
-        except Exception:
-            return False
+    def ping(self, retries: int = 3) -> bool:
+        """Check if guest agent is responding (with retries for slow guests)."""
+        for attempt in range(retries):
+            try:
+                resp = self._send_recv({"execute": "guest-ping"})
+                if "return" in resp:
+                    return True
+            except Exception as e:
+                logger.debug(f"QGA ping attempt {attempt + 1}/{retries} failed: {e}")
+            if attempt < retries - 1:
+                time.sleep(0.5)
+        return False
 
     def exec_command(self, command: str, timeout: int = 10,
                      shell: str = "sh") -> Optional[str]:
@@ -348,6 +406,7 @@ def get_qga_client(vm_dir: Path) -> QGAClient:
     sock_path = vm_dir / "qga.sock"
     if not sock_path.exists():
         raise QGAError(f"QGA socket not found: {sock_path}")
+    logger.debug(f"QGA client connecting to {sock_path}")
     return QGAClient(str(sock_path))
 
 

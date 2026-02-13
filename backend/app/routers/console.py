@@ -152,9 +152,10 @@ async def get_guest_info(
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Guest agent timed out")
     except QGAError as e:
+        logger.warning(f"QGA error for VM {vm_id} (os_type={os_type}): {e}")
         raise HTTPException(status_code=503, detail=f"Guest agent not available: {e}")
     except Exception as e:
-        logger.error(f"Guest info error for VM {vm_id}: {e}")
+        logger.error(f"Guest info error for VM {vm_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
