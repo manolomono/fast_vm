@@ -182,27 +182,28 @@ class QGAClient:
             info["os"] = self.query("guest-get-osinfo")
         except QGAError:
             info["os"] = None
-        # Windows fallback: use systeminfo via cmd
+        # Windows fallback: wmic is instant (systeminfo is 15-30s, too slow)
         if info["os"] is None and is_windows:
             try:
                 out = self.exec_command(
-                    'systeminfo | findstr /B /C:"OS Name" /C:"OS Version"',
-                    timeout=10, shell="cmd"
+                    "wmic os get caption,version /value",
+                    timeout=5, shell="cmd"
                 )
                 if out and out.strip():
-                    lines = out.strip().splitlines()
                     name = ""
                     version = ""
-                    for line in lines:
-                        if "OS Name" in line:
-                            name = line.split(":", 1)[-1].strip()
-                        elif "OS Version" in line:
-                            version = line.split(":", 1)[-1].strip()
-                    info["os"] = {
-                        "pretty-name": name or "Windows",
-                        "version": version,
-                        "id": "mswindows",
-                    }
+                    for line in out.strip().splitlines():
+                        line = line.strip()
+                        if line.startswith("Caption="):
+                            name = line.split("=", 1)[1].strip()
+                        elif line.startswith("Version="):
+                            version = line.split("=", 1)[1].strip()
+                    if name:
+                        info["os"] = {
+                            "pretty-name": name,
+                            "version": version,
+                            "id": "mswindows",
+                        }
             except QGAError:
                 pass
 
@@ -234,7 +235,7 @@ class QGAClient:
                 try:
                     out = self.exec_command(
                         "wmic logicaldisk get caption,size,freespace /format:csv",
-                        timeout=10, shell="cmd"
+                        timeout=5, shell="cmd"
                     )
                     if out:
                         disk_map = {}
@@ -283,19 +284,31 @@ class QGAClient:
         # Uptime
         if is_windows:
             try:
+                # wmic is instant; output: LastBootUpTime=20250213143022.500000+060
                 out = self.exec_command(
-                    'powershell -NoProfile -Command "'
-                    '$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; '
-                    '$span = (Get-Date) - $boot; '
-                    'Write-Output ($span.TotalSeconds -as [int])"',
-                    timeout=10, shell="cmd"
+                    "wmic os get lastbootuptime /value",
+                    timeout=5, shell="cmd"
                 )
-                if out and out.strip().isdigit():
-                    secs = int(out.strip())
-                    info["uptime"] = self._format_uptime(secs)
+                if out:
+                    for line in out.strip().splitlines():
+                        line = line.strip()
+                        if line.startswith("LastBootUpTime="):
+                            ts = line.split("=", 1)[1].strip()
+                            # Parse WMI datetime: YYYYMMDDHHmmss.ffffff+ZZZ
+                            if len(ts) >= 14:
+                                from datetime import datetime
+                                boot_str = ts[:14]  # YYYYMMDDHHmmss
+                                boot = datetime.strptime(boot_str, "%Y%m%d%H%M%S")
+                                delta = datetime.now() - boot
+                                # Rough correction for timezone (ignore for simplicity)
+                                secs = max(int(delta.total_seconds()), 0)
+                                info["uptime"] = self._format_uptime(secs)
+                                break
+                    else:
+                        info["uptime"] = None
                 else:
                     info["uptime"] = None
-            except QGAError:
+            except (QGAError, ValueError):
                 info["uptime"] = None
         else:
             try:

@@ -141,10 +141,16 @@ async def get_guest_info(
     try:
         loop = asyncio.get_event_loop()
         client = get_qga_client(vm_dir)
-        info = await loop.run_in_executor(
-            None, lambda: client.get_guest_info(os_type=os_type)
+        # 15s hard timeout so the request never hangs
+        info = await asyncio.wait_for(
+            loop.run_in_executor(
+                None, lambda: client.get_guest_info(os_type=os_type)
+            ),
+            timeout=15.0,
         )
         return {"success": True, "guest_info": info}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Guest agent timed out")
     except QGAError as e:
         raise HTTPException(status_code=503, detail=f"Guest agent not available: {e}")
     except Exception as e:
