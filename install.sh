@@ -140,7 +140,7 @@ step_system_deps() {
     case "$PKG_MANAGER" in
         apt)
             base_pkgs=(python3 python3-pip python3-venv git curl wget)
-            qemu_pkgs=(qemu-system-x86 qemu-utils ovmf swtpm)
+            qemu_pkgs=(qemu-system-x86 qemu-system-modules-spice qemu-utils ovmf swtpm)
             extra_pkgs=(bridge-utils net-tools genisoimage)
             ;;
         dnf|yum)

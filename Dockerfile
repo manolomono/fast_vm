@@ -4,6 +4,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qemu-kvm \
     qemu-system-x86 \
+    qemu-system-modules-spice \
     qemu-utils \
     ovmf \
     swtpm \
