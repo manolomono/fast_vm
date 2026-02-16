@@ -369,7 +369,7 @@ class VMManager:
 
             elif net_type == 'bridge':
                 # Bridge networking - uses qemu-bridge-helper
-                bridge_name = net.get('bridge_name', 'br0')
+                bridge_name = net.get('bridge_name') or 'br0'
                 # Log warnings but don't block - let QEMU attempt the connection
                 bridge_conf = Path("/etc/qemu/bridge.conf")
                 helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
@@ -393,7 +393,7 @@ class VMManager:
                 # macvtap networking - direct connection to physical interface
                 # VM gets IP from same DHCP as host, no bridge required
                 # This is handled specially in start_vm - just add placeholder
-                parent_iface = net.get('parent_interface', 'eno1')
+                parent_iface = net.get('parent_interface') or 'eno1'
                 # Include model in placeholder for device creation
                 args.append(f"__MACVTAP_{idx}_{parent_iface}_{nic_model}_{mac}__")
 
