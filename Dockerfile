@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     genisoimage \
     libvirt-daemon-system \
     websockify \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -23,8 +24,12 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/ /app/backend/
 COPY frontend/ /app/frontend/
 
+# Copy entrypoint
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Create necessary directories
-RUN mkdir -p /app/vms /app/images /app/data /app/backups /app/backend/logs
+RUN mkdir -p /app/vms /app/images /app/data /app/backups /app/backend/logs /app/certs
 
 # Expose port
 EXPOSE 8000
@@ -35,4 +40,4 @@ ENV JWT_SECRET_KEY=change-me-in-production
 
 WORKDIR /app/backend
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/entrypoint.sh"]

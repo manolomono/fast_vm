@@ -16,6 +16,8 @@ services:
       - ./images:/app/images
       - ./data:/app/data
       - ./backups:/app/backups
+      # SSL certificates (auto-generated on first start if not present)
+      - ./certs:/app/certs
       # KVM access from host
       - /dev/kvm:/dev/kvm
     devices:
@@ -27,6 +29,10 @@ services:
       - FASTVM_PRODUCTION=${FASTVM_PRODUCTION:-}
       # Comma-separated allowed CORS origins (default: "*" for dev)
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # SSL: hostname for self-signed certificate (default: localhost)
+      - SSL_HOSTNAME=${SSL_HOSTNAME:-localhost}
+      # SSL: set to "false" to disable HTTPS and use plain HTTP
+      - SSL_ENABLED=${SSL_ENABLED:-true}
     cap_add:
       - NET_ADMIN  # For bridge/macvtap networking
     privileged: false
