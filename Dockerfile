@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     qemu-kvm \
     qemu-system-x86 \
     qemu-utils \
+    ovmf \
+    swtpm \
     cloud-image-utils \
     genisoimage \
     libvirt-daemon-system \
