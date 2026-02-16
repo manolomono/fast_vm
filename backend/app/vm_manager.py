@@ -370,22 +370,46 @@ class VMManager:
             elif net_type == 'bridge':
                 # Bridge networking - uses qemu-bridge-helper
                 bridge_name = net.get('bridge_name') or 'br0'
-                # Log warnings but don't block - let QEMU attempt the connection
+                # Check bridge prerequisites and raise clear errors
                 bridge_conf = Path("/etc/qemu/bridge.conf")
-                helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
+                helper_paths = [
+                    Path("/usr/lib/qemu/qemu-bridge-helper"),
+                    Path("/usr/libexec/qemu-bridge-helper"),
+                ]
+                helper_path = next((p for p in helper_paths if p.exists()), None)
+                errors = []
                 if not bridge_conf.exists():
-                    logger.warning(
-                        f"Bridge conf missing: /etc/qemu/bridge.conf. "
-                        f"Fix with: sudo mkdir -p /etc/qemu && "
+                    errors.append(
+                        f"Missing /etc/qemu/bridge.conf. "
+                        f"Fix: sudo mkdir -p /etc/qemu && "
                         f"sudo sh -c 'echo \"allow {bridge_name}\" > /etc/qemu/bridge.conf'"
                     )
-                if helper_path.exists():
-                    mode = helper_path.stat().st_mode
-                    if not (mode & 0o4000):
-                        logger.warning(
-                            f"qemu-bridge-helper may need setuid: "
-                            f"sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
+                elif bridge_conf.exists():
+                    # Verify the bridge is allowed in the conf file
+                    conf_content = bridge_conf.read_text()
+                    if f"allow {bridge_name}" not in conf_content and "allow all" not in conf_content:
+                        errors.append(
+                            f"Bridge '{bridge_name}' not allowed in /etc/qemu/bridge.conf. "
+                            f"Fix: sudo sh -c 'echo \"allow {bridge_name}\" >> /etc/qemu/bridge.conf'"
                         )
+                if helper_path is None:
+                    errors.append(
+                        "qemu-bridge-helper not found. "
+                        "Install: sudo apt install qemu-system-common (Debian/Ubuntu) "
+                        "or sudo dnf install qemu-common (Fedora/RHEL)"
+                    )
+                elif not (helper_path.stat().st_mode & 0o4000):
+                    errors.append(
+                        f"qemu-bridge-helper needs setuid bit. "
+                        f"Fix: sudo chmod u+s {helper_path}"
+                    )
+                if errors:
+                    for err in errors:
+                        logger.warning(f"Bridge config issue: {err}")
+                    raise ValueError(
+                        f"Bridge networking requirements not met for '{bridge_name}': "
+                        + " | ".join(errors)
+                    )
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
