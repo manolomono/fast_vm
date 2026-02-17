@@ -3,23 +3,22 @@ services:
     build: .
     container_name: fast-vm
     restart: unless-stopped
-    ports:
-      - "8000:8000"
-      # Note: SPICE console access is proxied through port 8000 via built-in
-      # WebSocket proxy (/ws/spice/{vm_id}). No extra ports needed for console.
-      # Uncomment below only if you need direct VNC/SPICE TCP access:
-      # - "5800-5899:5800-5899"  # SPICE TCP ports
-      # - "5900-5999:5900-5999"  # VNC TCP ports
+    # network_mode: host gives QEMU direct access to host bridges (br0, etc.)
+    # Required for bridge and macvtap networking. Port 8000 is exposed directly.
+    network_mode: host
     volumes:
       # Persistent storage
       - ./vms:/app/vms
       - ./images:/app/images
       - ./data:/app/data
       - ./backups:/app/backups
+      # SSL certificates (auto-generated on first start if not present)
+      - ./certs:/app/certs
       # KVM access from host
       - /dev/kvm:/dev/kvm
     devices:
       - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun  # Required for bridge/macvtap networking (TAP interfaces)
     environment:
       # REQUIRED: Generate with: python -c "import secrets; print(secrets.token_hex(32))"
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
@@ -27,6 +26,10 @@ services:
       - FASTVM_PRODUCTION=${FASTVM_PRODUCTION:-}
       # Comma-separated allowed CORS origins (default: "*" for dev)
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # SSL: hostname for self-signed certificate (default: localhost)
+      - SSL_HOSTNAME=${SSL_HOSTNAME:-localhost}
+      # SSL: set to "false" to disable HTTPS and use plain HTTP
+      - SSL_ENABLED=${SSL_ENABLED:-true}
     cap_add:
       - NET_ADMIN  # For bridge/macvtap networking
     privileged: false

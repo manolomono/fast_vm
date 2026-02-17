@@ -369,23 +369,10 @@ class VMManager:
 
             elif net_type == 'bridge':
                 # Bridge networking - uses qemu-bridge-helper
-                bridge_name = net.get('bridge_name', 'br0')
-                # Log warnings but don't block - let QEMU attempt the connection
-                bridge_conf = Path("/etc/qemu/bridge.conf")
-                helper_path = Path("/usr/lib/qemu/qemu-bridge-helper")
-                if not bridge_conf.exists():
-                    logger.warning(
-                        f"Bridge conf missing: /etc/qemu/bridge.conf. "
-                        f"Fix with: sudo mkdir -p /etc/qemu && "
-                        f"sudo sh -c 'echo \"allow {bridge_name}\" > /etc/qemu/bridge.conf'"
-                    )
-                if helper_path.exists():
-                    mode = helper_path.stat().st_mode
-                    if not (mode & 0o4000):
-                        logger.warning(
-                            f"qemu-bridge-helper may need setuid: "
-                            f"sudo chmod u+s /usr/lib/qemu/qemu-bridge-helper"
-                        )
+                # Prerequisites (handled in Dockerfile for Docker deployments):
+                #   - /etc/qemu/bridge.conf must exist with "allow <bridge>"
+                #   - qemu-bridge-helper must have setuid bit
+                bridge_name = net.get('bridge_name') or 'br0'
                 args.extend(["-netdev", f"bridge,id=net{idx},br={bridge_name}"])
                 args.extend(["-device", f"{nic_model},netdev=net{idx},mac={mac}"])
 
@@ -393,7 +380,7 @@ class VMManager:
                 # macvtap networking - direct connection to physical interface
                 # VM gets IP from same DHCP as host, no bridge required
                 # This is handled specially in start_vm - just add placeholder
-                parent_iface = net.get('parent_interface', 'eno1')
+                parent_iface = net.get('parent_interface') or 'eno1'
                 # Include model in placeholder for device creation
                 args.append(f"__MACVTAP_{idx}_{parent_iface}_{nic_model}_{mac}__")
 

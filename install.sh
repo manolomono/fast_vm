@@ -5,6 +5,14 @@
 #
 set -euo pipefail
 
+# ===================== Modo no interactivo =====================
+NO_INPUT=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-input) NO_INPUT=true ;;
+    esac
+done
+
 # ===================== Colores =====================
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -98,6 +106,11 @@ ask_yes_no() {
     local default="${2:-y}"
     local answer
 
+    if [ "$NO_INPUT" = true ]; then
+        [[ "$default" =~ ^[SsYy]$ ]]
+        return
+    fi
+
     if [ "$default" = "y" ]; then
         prompt="$prompt [S/n]: "
     else
@@ -115,6 +128,11 @@ ask_choice() {
     local options=("$@")
     local i=1
 
+    if [ "$NO_INPUT" = true ]; then
+        echo "1"
+        return
+    fi
+
     echo -e "\n${BOLD}$prompt${NC}"
     for opt in "${options[@]}"; do
         echo "  $i) $opt"
@@ -129,7 +147,7 @@ ask_choice() {
 # ===================== Paso 1: Dependencias del sistema =====================
 step_system_deps() {
     echo ""
-    echo -e "${BOLD}=== Paso 1/5: Dependencias del Sistema ===${NC}"
+    echo -e "${BOLD}=== Paso 1/6: Dependencias del Sistema ===${NC}"
     echo ""
 
     # Paquetes base segun distro
@@ -140,7 +158,7 @@ step_system_deps() {
     case "$PKG_MANAGER" in
         apt)
             base_pkgs=(python3 python3-pip python3-venv git curl wget)
-            qemu_pkgs=(qemu-system-x86 qemu-utils ovmf swtpm)
+            qemu_pkgs=(qemu-system-x86 qemu-system-modules-spice qemu-utils ovmf swtpm)
             extra_pkgs=(bridge-utils net-tools genisoimage)
             ;;
         dnf|yum)
@@ -194,6 +212,24 @@ step_system_deps() {
         install_packages "${extra_pkgs[@]}" 2>/dev/null || warn "Algunos paquetes no se pudieron instalar"
     fi
 
+    # TUN/TAP device (required for bridge/macvtap networking)
+    if [ -c /dev/net/tun ]; then
+        success "TUN/TAP disponible (/dev/net/tun)"
+    else
+        info "Creando /dev/net/tun (necesario para redes bridge/macvtap)..."
+        modprobe tun 2>/dev/null || true
+        mkdir -p /dev/net
+        if [ ! -c /dev/net/tun ]; then
+            mknod /dev/net/tun c 10 200 2>/dev/null || true
+        fi
+        chmod 666 /dev/net/tun 2>/dev/null || true
+        if [ -c /dev/net/tun ]; then
+            success "TUN/TAP creado correctamente"
+        else
+            warn "No se pudo crear /dev/net/tun. El modo bridge no funcionara."
+        fi
+    fi
+
     # OVMF (UEFI firmware)
     if ls /usr/share/OVMF/OVMF_CODE*.fd &>/dev/null 2>&1 || \
        ls /usr/share/qemu/OVMF_CODE*.fd &>/dev/null 2>&1; then
@@ -206,7 +242,7 @@ step_system_deps() {
 # ===================== Paso 2: Docker =====================
 step_docker() {
     echo ""
-    echo -e "${BOLD}=== Paso 2/5: Docker (Opcional) ===${NC}"
+    echo -e "${BOLD}=== Paso 2/6: Docker (Opcional) ===${NC}"
     echo ""
 
     if command -v docker &>/dev/null; then
@@ -238,7 +274,7 @@ step_docker() {
 # ===================== Paso 3: Configuracion de Red =====================
 step_networking() {
     echo ""
-    echo -e "${BOLD}=== Paso 3/5: Configuracion de Red ===${NC}"
+    echo -e "${BOLD}=== Paso 3/6: Configuracion de Red ===${NC}"
     echo ""
 
     info "Interfaces de red detectadas:"
@@ -301,8 +337,12 @@ configure_bridge() {
     done
 
     local choice
-    read -rp "$(echo -e "${BOLD}Selecciona la interfaz para el bridge [1-${#ifaces[@]}]: ${NC}")" choice
-    choice="${choice:-1}"
+    if [ "$NO_INPUT" = true ]; then
+        choice=1
+    else
+        read -rp "$(echo -e "${BOLD}Selecciona la interfaz para el bridge [1-${#ifaces[@]}]: ${NC}")" choice
+        choice="${choice:-1}"
+    fi
 
     if [[ "$choice" -lt 1 || "$choice" -gt ${#ifaces[@]} ]]; then
         warn "Seleccion invalida. Saltando configuracion del bridge."
@@ -314,8 +354,12 @@ configure_bridge() {
     parent_iface=$(echo "$selected" | awk '{print $1}')
 
     local bridge_name
-    read -rp "$(echo -e "${BOLD}Nombre del bridge [br0]: ${NC}")" bridge_name
-    bridge_name="${bridge_name:-br0}"
+    if [ "$NO_INPUT" = true ]; then
+        bridge_name="br0"
+    else
+        read -rp "$(echo -e "${BOLD}Nombre del bridge [br0]: ${NC}")" bridge_name
+        bridge_name="${bridge_name:-br0}"
+    fi
 
     info "Creando bridge '$bridge_name' con interfaz '$parent_iface'..."
 
@@ -375,14 +419,18 @@ configure_bridge() {
 # ===================== Paso 4: Instalacion de Fast VM =====================
 step_install_fastvm() {
     echo ""
-    echo -e "${BOLD}=== Paso 4/5: Instalacion de Fast VM ===${NC}"
+    echo -e "${BOLD}=== Paso 4/6: Instalacion de Fast VM ===${NC}"
     echo ""
 
     # Determinar directorio de instalacion
     local install_dir
     local default_dir="/opt/fast-vm"
-    read -rp "$(echo -e "${BOLD}Directorio de instalacion [$default_dir]: ${NC}")" install_dir
-    install_dir="${install_dir:-$default_dir}"
+    if [ "$NO_INPUT" = true ]; then
+        install_dir="$default_dir"
+    else
+        read -rp "$(echo -e "${BOLD}Directorio de instalacion [$default_dir]: ${NC}")" install_dir
+        install_dir="${install_dir:-$default_dir}"
+    fi
 
     INSTALL_DIR="$install_dir"
 
@@ -391,7 +439,18 @@ step_install_fastvm() {
         if ask_yes_no "Actualizar instalacion existente?"; then
             cd "$install_dir"
             if [ -d .git ]; then
-                git pull
+                # Usar el usuario original para git pull (tiene las llaves SSH)
+                local real_user="${SUDO_USER:-$USER}"
+                if [ "$real_user" != "root" ] && [ -n "$real_user" ]; then
+                    # Dar ownership temporal al usuario para que git pueda escribir
+                    chown -R "$real_user" "$install_dir/.git"
+                    sudo -u "$real_user" git config --global --add safe.directory "$install_dir" 2>/dev/null || true
+                    sudo -u "$real_user" git pull
+                    # Restaurar ownership a root
+                    chown -R root:root "$install_dir/.git"
+                else
+                    git pull
+                fi
                 success "Codigo actualizado"
             fi
         fi
@@ -458,10 +517,84 @@ EOF
     fi
 }
 
-# ===================== Paso 5: Arranque =====================
+# ===================== Paso 5: Certificado SSL =====================
+step_ssl_certificate() {
+    echo ""
+    echo -e "${BOLD}=== Paso 5/6: Certificado SSL (HTTPS) ===${NC}"
+    echo ""
+
+    CERT_DIR="$INSTALL_DIR/certs"
+    SSL_ENABLED=false
+
+    if [ -f "$CERT_DIR/cert.pem" ] && [ -f "$CERT_DIR/key.pem" ]; then
+        success "Certificado SSL existente encontrado en $CERT_DIR"
+        SSL_ENABLED=true
+        return
+    fi
+
+    info "Fast VM puede generar un certificado autofirmado para HTTPS."
+    info "Esto es recomendable para proteger credenciales y consolas."
+    echo ""
+
+    if ask_yes_no "Generar certificado SSL autofirmado?"; then
+        local ssl_hostname
+        local default_hostname
+        default_hostname=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+
+        if [ "$NO_INPUT" = true ]; then
+            ssl_hostname="$default_hostname"
+        else
+            echo ""
+            info "Introduce el hostname o IP para el certificado."
+            info "Usa la IP/DNS por la que accederas a Fast VM."
+            read -rp "$(echo -e "${BOLD}Hostname/IP [$default_hostname]: ${NC}")" ssl_hostname
+            ssl_hostname="${ssl_hostname:-$default_hostname}"
+        fi
+
+        SSL_HOSTNAME="$ssl_hostname"
+
+        # Construir SAN
+        local san="DNS:localhost,IP:127.0.0.1"
+        if [ "$ssl_hostname" != "localhost" ]; then
+            if echo "$ssl_hostname" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                san="$san,IP:$ssl_hostname"
+            else
+                san="$san,DNS:$ssl_hostname"
+            fi
+        fi
+
+        mkdir -p "$CERT_DIR"
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$CERT_DIR/key.pem" \
+            -out "$CERT_DIR/cert.pem" \
+            -days 365 \
+            -subj "/CN=$ssl_hostname/O=Fast VM/C=ES" \
+            -addext "subjectAltName=$san" \
+            2>/dev/null
+
+        chmod 600 "$CERT_DIR/key.pem"
+        chmod 644 "$CERT_DIR/cert.pem"
+
+        SSL_ENABLED=true
+        success "Certificado generado para: $ssl_hostname (valido 365 dias)"
+        info "Archivos: $CERT_DIR/cert.pem, $CERT_DIR/key.pem"
+    else
+        info "Saltando SSL. Fast VM funcionara con HTTP."
+    fi
+
+    # Actualizar .env con configuracion SSL
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        # Eliminar lineas SSL previas si existen
+        sed -i '/^SSL_ENABLED=/d; /^SSL_HOSTNAME=/d' "$INSTALL_DIR/.env"
+    fi
+    echo "SSL_ENABLED=$SSL_ENABLED" >> "$INSTALL_DIR/.env"
+    echo "SSL_HOSTNAME=${SSL_HOSTNAME:-localhost}" >> "$INSTALL_DIR/.env"
+}
+
+# ===================== Paso 6: Arranque =====================
 step_start_service() {
     echo ""
-    echo -e "${BOLD}=== Paso 5/5: Arranque del Servicio ===${NC}"
+    echo -e "${BOLD}=== Paso 6/6: Arranque del Servicio ===${NC}"
     echo ""
 
     cd "$INSTALL_DIR"
@@ -483,12 +616,20 @@ step_start_service() {
         info "Arrancando Fast VM..."
         cd "$INSTALL_DIR/backend"
 
+        # Construir argumentos uvicorn
+        local uvicorn_args="app.main:app --host 0.0.0.0 --port 8000"
+        if [ "${SSL_ENABLED:-false}" = "true" ] && \
+           [ -f "$INSTALL_DIR/certs/cert.pem" ] && \
+           [ -f "$INSTALL_DIR/certs/key.pem" ]; then
+            uvicorn_args="$uvicorn_args --ssl-certfile $INSTALL_DIR/certs/cert.pem --ssl-keyfile $INSTALL_DIR/certs/key.pem"
+        fi
+
         if systemctl is-active --quiet fast-vm 2>/dev/null; then
             systemctl restart fast-vm
             success "Servicio reiniciado"
         else
             # Arrancar en foreground o background
-            nohup python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$INSTALL_DIR/fast-vm.log" 2>&1 &
+            nohup python3 -m uvicorn $uvicorn_args > "$INSTALL_DIR/fast-vm.log" 2>&1 &
             success "Fast VM arrancado (PID: $!)"
         fi
     fi
@@ -496,6 +637,14 @@ step_start_service() {
 
 create_systemd_service() {
     local real_user="${SUDO_USER:-$USER}"
+
+    # Construir ExecStart con o sin SSL
+    local exec_cmd="/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    if [ "${SSL_ENABLED:-false}" = "true" ] && \
+       [ -f "$INSTALL_DIR/certs/cert.pem" ] && \
+       [ -f "$INSTALL_DIR/certs/key.pem" ]; then
+        exec_cmd="$exec_cmd --ssl-certfile $INSTALL_DIR/certs/cert.pem --ssl-keyfile $INSTALL_DIR/certs/key.pem"
+    fi
 
     cat > /etc/systemd/system/fast-vm.service <<EOF
 [Unit]
@@ -507,7 +656,7 @@ Wants=network-online.target
 Type=simple
 User=$real_user
 WorkingDirectory=$INSTALL_DIR/backend
-ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+ExecStart=$exec_cmd
 Restart=always
 RestartSec=5
 Environment=JWT_SECRET_KEY=$(grep JWT_SECRET_KEY "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || echo "change-me")
@@ -526,12 +675,17 @@ show_summary() {
     local ip_addr
     ip_addr=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
+    local protocol="http"
+    if [ "${SSL_ENABLED:-false}" = "true" ]; then
+        protocol="https"
+    fi
+
     echo ""
     echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
     echo -e "${BOLD}║     ${GREEN}Instalacion completada${NC}${BOLD}                    ║${NC}"
     echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
     echo ""
-    echo -e "  ${BOLD}URL:${NC}        http://${ip_addr}:8000"
+    echo -e "  ${BOLD}URL:${NC}        ${protocol}://${ip_addr}:8000"
     echo -e "  ${BOLD}Usuario:${NC}    admin"
     echo -e "  ${BOLD}Password:${NC}   admin"
     echo -e "  ${BOLD}Directorio:${NC} $INSTALL_DIR"
@@ -558,11 +712,15 @@ show_summary() {
 
     # Comprobar si el servicio esta respondiendo
     sleep 2
-    if curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000/api/health" 2>/dev/null | grep -q "200"; then
+    local curl_opts=""
+    if [ "$protocol" = "https" ]; then
+        curl_opts="-k"
+    fi
+    if curl $curl_opts -s -o /dev/null -w "%{http_code}" "${protocol}://localhost:8000/api/health" 2>/dev/null | grep -q "200"; then
         success "Fast VM esta funcionando correctamente"
     else
         warn "El servicio puede tardar unos segundos en arrancar."
-        info "Comprueba: curl http://localhost:8000/api/health"
+        info "Comprueba: curl $curl_opts ${protocol}://localhost:8000/api/health"
     fi
 }
 
@@ -578,6 +736,7 @@ main() {
     step_docker
     step_networking
     step_install_fastvm
+    step_ssl_certificate
     step_start_service
     show_summary
 }
