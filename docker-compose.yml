@@ -18,6 +18,7 @@ services:
       - /dev/kvm:/dev/kvm
     devices:
       - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun  # Required for bridge/macvtap networking (TAP interfaces)
     environment:
       # REQUIRED: Generate with: python -c "import secrets; print(secrets.token_hex(32))"
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}

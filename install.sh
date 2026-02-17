@@ -194,6 +194,24 @@ step_system_deps() {
         install_packages "${extra_pkgs[@]}" 2>/dev/null || warn "Algunos paquetes no se pudieron instalar"
     fi
 
+    # TUN/TAP device (required for bridge/macvtap networking)
+    if [ -c /dev/net/tun ]; then
+        success "TUN/TAP disponible (/dev/net/tun)"
+    else
+        info "Creando /dev/net/tun (necesario para redes bridge/macvtap)..."
+        modprobe tun 2>/dev/null || true
+        mkdir -p /dev/net
+        if [ ! -c /dev/net/tun ]; then
+            mknod /dev/net/tun c 10 200 2>/dev/null || true
+        fi
+        chmod 666 /dev/net/tun 2>/dev/null || true
+        if [ -c /dev/net/tun ]; then
+            success "TUN/TAP creado correctamente"
+        else
+            warn "No se pudo crear /dev/net/tun. El modo bridge no funcionara."
+        fi
+    fi
+
     # OVMF (UEFI firmware)
     if ls /usr/share/OVMF/OVMF_CODE*.fd &>/dev/null 2>&1 || \
        ls /usr/share/qemu/OVMF_CODE*.fd &>/dev/null 2>&1; then

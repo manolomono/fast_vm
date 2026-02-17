@@ -5,6 +5,13 @@
 #
 set -e
 
+# Ensure /dev/net/tun exists (required for bridge/macvtap networking)
+if [ ! -c /dev/net/tun ]; then
+    mkdir -p /dev/net
+    mknod /dev/net/tun c 10 200 2>/dev/null || true
+    chmod 666 /dev/net/tun 2>/dev/null || true
+fi
+
 CERT_DIR="/app/certs"
 CERT_FILE="$CERT_DIR/cert.pem"
 KEY_FILE="$CERT_DIR/key.pem"
