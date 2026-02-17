@@ -32,6 +32,12 @@ RUN chmod +x /app/entrypoint.sh
 # Create necessary directories
 RUN mkdir -p /app/vms /app/images /app/data /app/backups /app/backend/logs /app/certs
 
+# Setup QEMU bridge networking: allow all bridges and set setuid on helper
+RUN mkdir -p /etc/qemu && echo "allow all" > /etc/qemu/bridge.conf \
+    && chmod 644 /etc/qemu/bridge.conf \
+    && HELPER=$(find /usr -name qemu-bridge-helper 2>/dev/null | head -1) \
+    && if [ -n "$HELPER" ]; then chmod u+s "$HELPER"; fi
+
 # Expose port
 EXPOSE 8000
 

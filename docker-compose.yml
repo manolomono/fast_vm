@@ -3,13 +3,9 @@ services:
     build: .
     container_name: fast-vm
     restart: unless-stopped
-    ports:
-      - "8000:8000"
-      # Note: SPICE console access is proxied through port 8000 via built-in
-      # WebSocket proxy (/ws/spice/{vm_id}). No extra ports needed for console.
-      # Uncomment below only if you need direct VNC/SPICE TCP access:
-      # - "5800-5899:5800-5899"  # SPICE TCP ports
-      # - "5900-5999:5900-5999"  # VNC TCP ports
+    # network_mode: host gives QEMU direct access to host bridges (br0, etc.)
+    # Required for bridge and macvtap networking. Port 8000 is exposed directly.
+    network_mode: host
     volumes:
       # Persistent storage
       - ./vms:/app/vms
