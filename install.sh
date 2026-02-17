@@ -392,13 +392,14 @@ step_install_fastvm() {
             cd "$install_dir"
             if [ -d .git ]; then
                 # Usar el usuario original para git pull (tiene las llaves SSH)
-                # y marcar el directorio como safe (propiedad de root, pull como usuario)
                 local real_user="${SUDO_USER:-$USER}"
                 if [ "$real_user" != "root" ] && [ -n "$real_user" ]; then
-                    local real_home
-                    real_home=$(eval echo "~$real_user")
+                    # Dar ownership temporal al usuario para que git pueda escribir
+                    chown -R "$real_user" "$install_dir/.git"
                     sudo -u "$real_user" git config --global --add safe.directory "$install_dir" 2>/dev/null || true
                     sudo -u "$real_user" git pull
+                    # Restaurar ownership a root
+                    chown -R root:root "$install_dir/.git"
                 else
                     git pull
                 fi
