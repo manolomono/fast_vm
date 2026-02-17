@@ -264,12 +264,12 @@ class VMManager:
                 json.dump(self.volumes, f, indent=2)
 
     def _get_free_vnc_port(self) -> int:
-        """Get a free VNC port starting from 5900"""
+        """Get a free VNC port starting from 5900, checking actual availability"""
         used_ports = {vm.get('vnc_port') for vm in self.vms.values() if vm.get('vnc_port')}
         for port in range(5900, 5999):
-            if port not in used_ports:
+            if port not in used_ports and not self._is_port_in_use(port):
                 return port
-        return 5900
+        raise RuntimeError("No free VNC ports available (5900-5999)")
 
     def _get_free_spice_port(self) -> int:
         """Get a free SPICE port starting from 5800, checking actual availability"""
