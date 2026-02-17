@@ -82,6 +82,28 @@ async def attach_volume(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/vms/{vm_id}/volumes/{vol_id}/promote", response_model=VMResponse)
+async def promote_volume(
+    vm_id: str,
+    vol_id: str,
+    current_user: AuthUserInfo = Depends(get_current_user),
+):
+    """Promote an attached volume to be the VM's primary disk.
+
+    Replaces the current (empty) disk with the volume file.
+    Useful when the OS was installed on a volume instead of the main disk.
+    """
+    try:
+        vm = vm_manager.promote_volume(vm_id, vol_id)
+        log_action(current_user.username, "promote_volume", "vm", vm_id, {"volume_id": vol_id})
+        return VMResponse(success=True, message=f"Volume promoted to primary disk of VM '{vm.name}'", vm=vm)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Internal error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.delete("/vms/{vm_id}/volumes/{vol_id}", response_model=VMResponse)
 async def detach_volume(
     vm_id: str,

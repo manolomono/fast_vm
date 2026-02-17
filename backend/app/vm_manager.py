@@ -1517,6 +1517,64 @@ class VMManager:
 
         return VMInfo(**vm)
 
+    def promote_volume(self, vm_id: str, vol_id: str) -> VMInfo:
+        """Promote an attached volume to be the VM's primary disk.
+
+        Replaces the current disk.qcow2 with the volume file, removes
+        the volume from volumes.json, and updates the VM config.
+        VM must be stopped.
+        """
+        if vm_id not in self.vms:
+            raise ValueError(f"VM {vm_id} not found")
+        if vol_id not in self.volumes:
+            raise ValueError(f"Volume {vol_id} not found")
+
+        vm = self.vms[vm_id]
+        vol = self.volumes[vol_id]
+
+        # Must be stopped
+        self._update_vm_status(vm_id)
+        if vm['status'] == VMStatus.RUNNING.value:
+            raise ValueError("Cannot promote volume while VM is running. Stop it first.")
+
+        # Must be attached to this VM
+        if vol.get('attached_to') != vm_id:
+            raise ValueError("Volume is not attached to this VM")
+
+        vol_path = Path(vol['path'])
+        if not vol_path.exists():
+            raise ValueError(f"Volume file not found: {vol_path}")
+
+        vm_dir = self.vms_dir / vm_id
+        old_disk = Path(vm['disk_path'])
+        new_disk = vm_dir / "disk.qcow2"
+
+        # Remove old disk (the empty one)
+        if old_disk.exists():
+            old_disk.unlink()
+            logger.info(f"Removed old disk: {old_disk}")
+
+        # Move volume file to become the primary disk
+        shutil.move(str(vol_path), str(new_disk))
+        logger.info(f"Moved {vol_path} -> {new_disk}")
+
+        # Update VM config
+        vm['disk_path'] = str(new_disk)
+        vm['disk_size'] = vol.get('size_gb', vm['disk_size'])
+
+        # Remove volume from VM's volume list
+        if vol_id in vm.get('volumes', []):
+            vm['volumes'].remove(vol_id)
+
+        # Remove volume from volumes registry
+        del self.volumes[vol_id]
+
+        self._save_vms()
+        self._save_volumes()
+
+        logger.info(f"Volume '{vol['name']}' promoted to primary disk of VM '{vm['name']}'")
+        return VMInfo(**vm)
+
     # ==================== Snapshot Management ====================
 
     def create_snapshot(self, vm_id: str, snap_data: SnapshotCreate) -> Snapshot:
@@ -1716,6 +1774,14 @@ class VMManager:
                 ovmf_vars = vm_dir / "OVMF_VARS.fd"
                 if ovmf_vars.exists():
                     tar.add(str(ovmf_vars), arcname="OVMF_VARS.fd")
+                # Add attached volumes
+                for vol_id in vm.get('volumes', []):
+                    vol = self.volumes.get(vol_id)
+                    if vol and vol.get('path') and os.path.exists(vol['path']):
+                        vol_format = vol.get('format', 'qcow2')
+                        arcname = f"volumes/{vol_id}.{vol_format}"
+                        tar.add(vol['path'], arcname=arcname)
+                        logger.info(f"Backup: included volume '{vol.get('name')}' ({arcname})")
         finally:
             # Clean up temp config
             if config_path.exists():
@@ -1778,14 +1844,58 @@ class VMManager:
                 net['id'] = str(uuid.uuid4())
                 net['mac_address'] = self._generate_mac_address()
 
-            # Clean up volumes reference (don't carry over)
-            vm_config['volumes'] = []
+            # Restore attached volumes if present in backup
+            new_volume_ids = []
+            volumes_extract_dir = new_vm_dir / "volumes"
+            if volumes_extract_dir.exists() and volumes_extract_dir.is_dir():
+                for vol_file in volumes_extract_dir.iterdir():
+                    if vol_file.is_file():
+                        new_vol_id = str(uuid.uuid4())
+                        vol_format = vol_file.suffix.lstrip('.')
+                        dest_path = self.volumes_dir / f"{new_vol_id}.{vol_format}"
+                        self.volumes_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(vol_file), str(dest_path))
+
+                        # Find original volume config from old config
+                        old_vol_id = vol_file.stem  # filename without extension
+                        old_volumes = vm_config.get('_backup_volumes', {})
+
+                        vol_config = {
+                            'id': new_vol_id,
+                            'name': f"vol-{vm_config.get('name', 'restored')[:30]}",
+                            'size_gb': 0,
+                            'format': vol_format or 'qcow2',
+                            'path': str(dest_path),
+                            'attached_to': new_vm_id
+                        }
+
+                        # Try to get size from qemu-img info
+                        try:
+                            result = subprocess.run(
+                                ["qemu-img", "info", "--output=json", str(dest_path)],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            if result.returncode == 0:
+                                info = json.loads(result.stdout)
+                                vol_config['size_gb'] = round(info.get('virtual-size', 0) / (1024**3))
+                        except Exception:
+                            pass
+
+                        self.volumes[new_vol_id] = vol_config
+                        new_volume_ids.append(new_vol_id)
+                        logger.info(f"Restored volume: {new_vol_id} from {vol_file.name}")
+
+                # Clean up extracted volumes dir
+                shutil.rmtree(volumes_extract_dir, ignore_errors=True)
+
+            vm_config['volumes'] = new_volume_ids
 
             # Clean up temp config
             config_path.unlink()
 
             self.vms[new_vm_id] = vm_config
             self._save_vms()
+            self._save_volumes()
 
             logger.info(f"VM restored from backup: {vm_config['name']} ({new_vm_id})")
             return VMInfo(**vm_config)
