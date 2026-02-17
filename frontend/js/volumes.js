@@ -55,6 +55,24 @@ window.FastVM.volumeMethods = {
         } finally { this.actionLoading = false; }
     },
 
+    async promoteVolume(volId) {
+        if (!this.editTarget) return;
+        const volName = this.getVolumeName(volId);
+        if (!confirm(`Promote "${volName}" to primary disk? This will replace the current disk.qcow2.`)) return;
+        if (this.actionLoading) return;
+        this.actionLoading = true;
+        try {
+            const res = await FastVM.api(`/vms/${this.editTarget.id}/volumes/${volId}/promote`, { method: 'POST' });
+            this.showToast('Volume promoted to primary disk', 'success');
+            this.editTarget.volumes = this.editTarget.volumes.filter(v => v !== volId);
+            if (res.vm && res.vm.disk_size) this.editTarget.disk_size = res.vm.disk_size;
+            await this.loadVolumes();
+            await this.loadVMs();
+        } catch (err) {
+            this.showToast(err.message, 'error');
+        } finally { this.actionLoading = false; }
+    },
+
     async detachVolume(volId) {
         if (!this.editTarget) return;
         if (this.actionLoading) return;
