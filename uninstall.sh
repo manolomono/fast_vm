@@ -5,6 +5,14 @@
 #
 set -euo pipefail
 
+# ===================== Modo no interactivo =====================
+NO_INPUT=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-input) NO_INPUT=true ;;
+    esac
+done
+
 # ===================== Colores =====================
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -38,6 +46,11 @@ ask_yes_no() {
     local default="${2:-n}"
     local answer
 
+    if [ "$NO_INPUT" = true ]; then
+        [[ "$default" =~ ^[SsYy]$ ]]
+        return
+    fi
+
     if [ "$default" = "y" ]; then
         prompt="$prompt [S/n]: "
     else
@@ -70,6 +83,10 @@ detect_install() {
     done
 
     if [ -z "$INSTALL_DIR" ]; then
+        if [ "$NO_INPUT" = true ]; then
+            error "No se encontro una instalacion de Fast VM en /opt/fast-vm ni en el directorio actual."
+            exit 1
+        fi
         warn "No se encontro una instalacion de Fast VM automaticamente."
         local custom_dir
         read -rp "$(echo -e "${BOLD}Introduce el directorio de instalacion: ${NC}")" custom_dir
@@ -369,12 +386,19 @@ main() {
     echo -e "  Se te preguntara antes de eliminar datos importantes."
     echo ""
 
-    if ! ask_yes_no "Continuar con la desinstalacion?"; then
+    if [ "$NO_INPUT" = true ]; then
+        info "Modo no interactivo: usando valores por defecto."
+    elif ! ask_yes_no "Continuar con la desinstalacion?"; then
         info "Desinstalacion cancelada."
         exit 0
     fi
 
-    detect_install "${1:-}"
+    # Filter --no-input from positional args
+    local install_arg=""
+    for arg in "$@"; do
+        [[ "$arg" != "--no-input" ]] && install_arg="$arg" && break
+    done
+    detect_install "${install_arg:-}"
     step_stop_services
     step_remove_systemd
     step_docker_cleanup

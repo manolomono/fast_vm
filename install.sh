@@ -5,6 +5,14 @@
 #
 set -euo pipefail
 
+# ===================== Modo no interactivo =====================
+NO_INPUT=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-input) NO_INPUT=true ;;
+    esac
+done
+
 # ===================== Colores =====================
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -98,6 +106,11 @@ ask_yes_no() {
     local default="${2:-y}"
     local answer
 
+    if [ "$NO_INPUT" = true ]; then
+        [[ "$default" =~ ^[SsYy]$ ]]
+        return
+    fi
+
     if [ "$default" = "y" ]; then
         prompt="$prompt [S/n]: "
     else
@@ -114,6 +127,11 @@ ask_choice() {
     shift
     local options=("$@")
     local i=1
+
+    if [ "$NO_INPUT" = true ]; then
+        echo "1"
+        return
+    fi
 
     echo -e "\n${BOLD}$prompt${NC}"
     for opt in "${options[@]}"; do
@@ -319,8 +337,12 @@ configure_bridge() {
     done
 
     local choice
-    read -rp "$(echo -e "${BOLD}Selecciona la interfaz para el bridge [1-${#ifaces[@]}]: ${NC}")" choice
-    choice="${choice:-1}"
+    if [ "$NO_INPUT" = true ]; then
+        choice=1
+    else
+        read -rp "$(echo -e "${BOLD}Selecciona la interfaz para el bridge [1-${#ifaces[@]}]: ${NC}")" choice
+        choice="${choice:-1}"
+    fi
 
     if [[ "$choice" -lt 1 || "$choice" -gt ${#ifaces[@]} ]]; then
         warn "Seleccion invalida. Saltando configuracion del bridge."
@@ -332,8 +354,12 @@ configure_bridge() {
     parent_iface=$(echo "$selected" | awk '{print $1}')
 
     local bridge_name
-    read -rp "$(echo -e "${BOLD}Nombre del bridge [br0]: ${NC}")" bridge_name
-    bridge_name="${bridge_name:-br0}"
+    if [ "$NO_INPUT" = true ]; then
+        bridge_name="br0"
+    else
+        read -rp "$(echo -e "${BOLD}Nombre del bridge [br0]: ${NC}")" bridge_name
+        bridge_name="${bridge_name:-br0}"
+    fi
 
     info "Creando bridge '$bridge_name' con interfaz '$parent_iface'..."
 
@@ -399,8 +425,12 @@ step_install_fastvm() {
     # Determinar directorio de instalacion
     local install_dir
     local default_dir="/opt/fast-vm"
-    read -rp "$(echo -e "${BOLD}Directorio de instalacion [$default_dir]: ${NC}")" install_dir
-    install_dir="${install_dir:-$default_dir}"
+    if [ "$NO_INPUT" = true ]; then
+        install_dir="$default_dir"
+    else
+        read -rp "$(echo -e "${BOLD}Directorio de instalacion [$default_dir]: ${NC}")" install_dir
+        install_dir="${install_dir:-$default_dir}"
+    fi
 
     INSTALL_DIR="$install_dir"
 
@@ -511,11 +541,15 @@ step_ssl_certificate() {
         local default_hostname
         default_hostname=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 
-        echo ""
-        info "Introduce el hostname o IP para el certificado."
-        info "Usa la IP/DNS por la que accederas a Fast VM."
-        read -rp "$(echo -e "${BOLD}Hostname/IP [$default_hostname]: ${NC}")" ssl_hostname
-        ssl_hostname="${ssl_hostname:-$default_hostname}"
+        if [ "$NO_INPUT" = true ]; then
+            ssl_hostname="$default_hostname"
+        else
+            echo ""
+            info "Introduce el hostname o IP para el certificado."
+            info "Usa la IP/DNS por la que accederas a Fast VM."
+            read -rp "$(echo -e "${BOLD}Hostname/IP [$default_hostname]: ${NC}")" ssl_hostname
+            ssl_hostname="${ssl_hostname:-$default_hostname}"
+        fi
 
         SSL_HOSTNAME="$ssl_hostname"
 
