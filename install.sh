@@ -391,7 +391,13 @@ step_install_fastvm() {
         if ask_yes_no "Actualizar instalacion existente?"; then
             cd "$install_dir"
             if [ -d .git ]; then
-                git pull
+                # Usar el usuario original para git pull (tiene las llaves SSH)
+                local real_user="${SUDO_USER:-$USER}"
+                if [ "$real_user" != "root" ] && [ -n "$real_user" ]; then
+                    sudo -u "$real_user" git pull
+                else
+                    git pull
+                fi
                 success "Codigo actualizado"
             fi
         fi
