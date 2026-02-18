@@ -63,6 +63,7 @@ def app_client(temp_dirs):
     from httpx import ASGITransport, AsyncClient
 
     # Point vm_manager to temp dirs
+    orig_base_dir = vm_manager.base_dir
     orig_vms_dir = vm_manager.vms_dir
     orig_config_file = vm_manager.config_file
     orig_volumes_file = vm_manager.volumes_file
@@ -70,6 +71,7 @@ def app_client(temp_dirs):
     orig_vms = vm_manager.vms
     orig_volumes = getattr(vm_manager, 'volumes', {})
 
+    vm_manager.base_dir = Path(temp_dirs["tmp_path"])
     vm_manager.vms_dir = Path(temp_dirs["vms_dir"])
     vm_manager.config_file = vm_manager.vms_dir / "vms.json"
     vm_manager.volumes_file = vm_manager.vms_dir / "volumes.json"
@@ -83,6 +85,7 @@ def app_client(temp_dirs):
     yield client
 
     # Restore originals
+    vm_manager.base_dir = orig_base_dir
     vm_manager.vms_dir = orig_vms_dir
     vm_manager.config_file = orig_config_file
     vm_manager.volumes_file = orig_volumes_file

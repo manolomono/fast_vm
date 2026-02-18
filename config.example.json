@@ -1,7 +1,7 @@
 
 {
-  "vms_directory": "/home/user/fast_vm/vms",
-  "images_directory": "/home/user/fast_vm/images",
+  "vms_directory": "./vms",
+  "images_directory": "./images",
   "server": {
     "host": "0.0.0.0",
     "port": 8000

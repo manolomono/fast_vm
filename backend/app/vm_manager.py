@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
+import copy
 import shutil
 import tempfile
 from .models import (
@@ -25,9 +26,10 @@ logger = logging.getLogger("fast_vm.vm_manager")
 class VMManager:
     def __init__(self, vms_dir: Optional[str] = None):
         if vms_dir is None:
-            # Use relative path from project root
-            base_dir = Path(__file__).parent.parent.parent
-            vms_dir = base_dir / "vms"
+            self.base_dir = Path(__file__).parent.parent.parent
+            vms_dir = self.base_dir / "vms"
+        else:
+            self.base_dir = Path(vms_dir).parent
         self.vms_dir = Path(vms_dir)
         self.vms_dir.mkdir(parents=True, exist_ok=True)
         self.config_file = self.vms_dir / "vms.json"
@@ -55,6 +57,28 @@ class VMManager:
         # Persistent Process objects + I/O baselines for accurate metrics
         self._metric_procs: dict = {}    # vm_id -> psutil.Process
         self._metric_prev_io: dict = {}  # vm_id -> (read_bytes, write_bytes)
+
+    def _to_relative(self, abs_path: Optional[str]) -> Optional[str]:
+        """Convert absolute path to relative (to base_dir) for JSON storage.
+        External paths (outside base_dir) are kept absolute."""
+        if not abs_path:
+            return abs_path
+        try:
+            rel = os.path.relpath(abs_path, self.base_dir)
+            if rel.startswith('..'):
+                return abs_path
+            return rel
+        except ValueError:
+            return abs_path
+
+    def _to_absolute(self, rel_or_abs_path: Optional[str]) -> Optional[str]:
+        """Convert relative path (to base_dir) to absolute for in-memory use.
+        Already-absolute paths are returned as-is."""
+        if not rel_or_abs_path:
+            return rel_or_abs_path
+        if os.path.isabs(rel_or_abs_path):
+            return rel_or_abs_path
+        return str(self.base_dir / rel_or_abs_path)
 
     def _start_swtpm(self, vm_id: str, vm_dir: Path) -> Optional[str]:
         """Start swtpm (software TPM) for a VM"""
@@ -238,30 +262,74 @@ class VMManager:
                         else:
                             vm['os_type'] = 'linux'
                         needs_save = True
+                # Migrate absolute paths to relative for portability
+                for vm_id, vm in vms.items():
+                    for field in ('disk_path', 'iso_path', 'secondary_iso_path'):
+                        val = vm.get(field)
+                        if val and os.path.isabs(val):
+                            rel = self._to_relative(val)
+                            if rel != val:
+                                vm[field] = rel
+                                needs_save = True
+
                 if needs_save:
                     with open(self.config_file, 'w') as f:
                         json.dump(vms, f, indent=2)
+
+                # Convert relative paths to absolute for in-memory use
+                for vm_id, vm in vms.items():
+                    for field in ('disk_path', 'iso_path', 'secondary_iso_path'):
+                        vm[field] = self._to_absolute(vm.get(field))
+
                 return vms
         return {}
 
     def _save_vms(self):
-        """Save VMs configuration to disk (thread-safe)"""
+        """Save VMs configuration to disk (thread-safe).
+        Paths are stored as relative for portability."""
         with self._config_lock:
+            vms_to_save = copy.deepcopy(self.vms)
+            for vm_id, vm in vms_to_save.items():
+                for field in ('disk_path', 'iso_path', 'secondary_iso_path'):
+                    vm[field] = self._to_relative(vm.get(field))
             with open(self.config_file, 'w') as f:
-                json.dump(self.vms, f, indent=2)
+                json.dump(vms_to_save, f, indent=2)
 
     def _load_volumes(self) -> Dict:
         """Load volumes configuration from disk"""
         if self.volumes_file.exists():
             with open(self.volumes_file, 'r') as f:
-                return json.load(f)
+                volumes = json.load(f)
+
+            # Migrate absolute paths to relative for portability
+            paths_migrated = False
+            for vol_id, vol in volumes.items():
+                val = vol.get('path')
+                if val and os.path.isabs(val):
+                    rel = self._to_relative(val)
+                    if rel != val:
+                        vol['path'] = rel
+                        paths_migrated = True
+            if paths_migrated:
+                with open(self.volumes_file, 'w') as f:
+                    json.dump(volumes, f, indent=2)
+
+            # Convert relative paths to absolute for in-memory use
+            for vol_id, vol in volumes.items():
+                vol['path'] = self._to_absolute(vol.get('path'))
+
+            return volumes
         return {}
 
     def _save_volumes(self):
-        """Save volumes configuration to disk (thread-safe)"""
+        """Save volumes configuration to disk (thread-safe).
+        Paths are stored as relative for portability."""
         with self._config_lock:
+            volumes_to_save = copy.deepcopy(self.volumes)
+            for vol_id, vol in volumes_to_save.items():
+                vol['path'] = self._to_relative(vol.get('path'))
             with open(self.volumes_file, 'w') as f:
-                json.dump(self.volumes, f, indent=2)
+                json.dump(volumes_to_save, f, indent=2)
 
     def _get_free_vnc_port(self) -> int:
         """Get a free VNC port starting from 5900, checking actual availability"""
